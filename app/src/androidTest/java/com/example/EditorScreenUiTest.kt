@@ -8,9 +8,11 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -112,7 +114,7 @@ class EditorScreenUiTest {
     composeRule.onNodeWithTag("player_play_pause_button").performClick()
     composeRule.waitUntil(5_000) { viewModel.isPlaying.value && viewModel.currentTime.value > 0.2 }
     // Tap on the text of the line (not on its chips/buttons).
-    composeRule.onNodeWithTag("segment_row_${segmentIds[2]}").performTouchInput { click(percentOffset(0.6f, 0.9f)) }
+    tapLine(segmentIds[2])
     Thread.sleep(700)
     composeRule.waitForIdle()
     val afterSeek = viewModel.currentTime.value
@@ -122,7 +124,7 @@ class EditorScreenUiTest {
     composeRule.waitUntil(3_000) { !viewModel.isPlaying.value }
 
     // Tapping the first line while paused moves back to it.
-    composeRule.onNodeWithTag("segment_row_${segmentIds[0]}").performTouchInput { click(percentOffset(0.6f, 0.9f)) }
+    tapLine(segmentIds[0])
     composeRule.waitForIdle()
     assertEquals(0.25, viewModel.currentTime.value, 0.01)
 
@@ -158,6 +160,12 @@ class EditorScreenUiTest {
     logScreenshot("editor_blur_moved")
   }
 
+  private fun tapLine(segmentId: Long) {
+    val tag = "segment_row_$segmentId"
+    composeRule.onNodeWithTag("segment_list").performScrollToNode(hasTestTag(tag))
+    composeRule.onNodeWithTag(tag).performTouchInput { click(percentOffset(0.6f, 0.9f)) }
+  }
+
   /** Logs a small JPEG of the screen as base64, so CI can show it without downloading artifacts. */
   private fun logScreenshot(name: String) {
     val captured = instrumentation.uiAutomation.takeScreenshot() ?: return
@@ -166,10 +174,10 @@ class EditorScreenUiTest {
     } else {
       captured
     }
-    val width = 360
+    val width = 300
     val height = (screen.height * width.toFloat() / screen.width).toInt()
     val small = Bitmap.createScaledBitmap(screen, width, height, true)
-    val bytes = ByteArrayOutputStream().also { small.compress(Bitmap.CompressFormat.JPEG, 55, it) }.toByteArray()
+    val bytes = ByteArrayOutputStream().also { small.compress(Bitmap.CompressFormat.JPEG, 50, it) }.toByteArray()
     val chunks = Base64.encodeToString(bytes, Base64.NO_WRAP).chunked(3000)
     chunks.forEachIndexed { index, chunk -> Log.i("MSTSHOT", "$name ${index + 1}/${chunks.size} $chunk") }
   }

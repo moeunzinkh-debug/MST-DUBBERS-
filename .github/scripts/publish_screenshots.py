@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
-"""Reassembles the screenshots logged by EditorScreenUiTest (tag MSTSHOT) and publishes each
-one as a base64 JPEG notice, readable from the GitHub API without downloading artifacts."""
+"""Reassembles a screenshot logged by EditorScreenUiTest (logcat tag MSTSHOT) and publishes it as
+base64 JPEG notices, readable from the GitHub API without downloading artifacts.
+
+Usage: publish_screenshots.py <screenshots.txt> <screenshot name>
+GitHub keeps 4096 characters per annotation and 10 notices per step, so call it once per
+screenshot, each from its own step.
+"""
 import base64
 import sys
-from collections import defaultdict
 
-chunks = defaultdict(dict)
-totals = {}
+CHUNK = 4000
+path, wanted = sys.argv[1], sys.argv[2]
+parts, total = {}, None
 try:
-    with open(sys.argv[1] if len(sys.argv) > 1 else "screenshots.txt", errors="replace") as handle:
+    with open(path, errors="replace") as handle:
         for line in handle:
-            parts = line.strip().split(" ")
-            if len(parts) != 3 or "/" not in parts[1]:
+            fields = line.strip().split(" ")
+            if len(fields) != 3 or fields[0] != wanted or "/" not in fields[1]:
                 continue
-            name, position, data = parts
-            index, total = (int(x) for x in position.split("/"))
-            chunks[name][index] = data
-            totals[name] = total
+            index, total = (int(x) for x in fields[1].split("/"))
+            parts[index] = fields[2]
 except OSError:
     pass
 
-for name, parts in chunks.items():
-    if len(parts) != totals[name]:
-        print(f"::warning title=Screenshot {name}::incomplete ({len(parts)}/{totals[name]} chunks)")
-        continue
-    data = "".join(parts[i] for i in range(1, totals[name] + 1))
-    size = len(base64.b64decode(data))
-    print(f"Screenshot {name}: {size} bytes")
-    print(f"::notice title=Screenshot {name} ({size} bytes)::{data}")
-if not chunks:
-    print("No screenshots found.")
+if total is None or len(parts) != total:
+    print(f"Screenshot {wanted} not found or incomplete.")
+    sys.exit(0)
+data = "".join(parts[i] for i in range(1, total + 1))
+size = len(base64.b64decode(data))
+pieces = [data[i:i + CHUNK] for i in range(0, len(data), CHUNK)]
+if len(pieces) > 10:
+    print(f"::warning title=Screenshot {wanted}::too large ({size} bytes)")
+    sys.exit(0)
+for number, piece in enumerate(pieces, start=1):
+    print(f"::notice title=Screenshot {wanted} {number}/{len(pieces)}::{piece}")

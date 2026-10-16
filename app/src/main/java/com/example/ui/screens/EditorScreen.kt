@@ -637,6 +637,7 @@ fun EditorScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
+                        .testTag("segment_list")
                 ) {
                     items(segments, key = { it.id }) { seg ->
                         val isActive = activeSegment?.id == seg.id

@@ -272,6 +272,7 @@ jobs:
           api-level: 34
           target: google_apis
           arch: x86_64
+          profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash .github/scripts/run_instrumented_tests.sh
@@ -284,6 +285,14 @@ jobs:
         if: always()
         run: python3 .github/scripts/test_summary.py
 
-      - name: Publish UI screenshots
+      - name: Publish screenshot (paused)
         if: always()
-        run: python3 .github/scripts/publish_screenshots.py screenshots.txt
+        run: python3 .github/scripts/publish_screenshots.py screenshots.txt editor_paused
+
+      - name: Publish screenshot (playing)
+        if: always()
+        run: python3 .github/scripts/publish_screenshots.py screenshots.txt editor_playing
+
+      - name: Publish screenshot (blur box moved)
+        if: always()
+        run: python3 .github/scripts/publish_screenshots.py screenshots.txt editor_blur_moved
