@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Male
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -1302,7 +1304,10 @@ fun ExportSheet(
     segmentCount: Int,
     translatedCount: Int,
     voicedCount: Int,
+    hasVideo: Boolean,
+    blurEnabled: Boolean,
     onDismiss: () -> Unit,
+    onExportVideo: () -> Unit,
     onExportSrt: () -> Unit,
     onExportVtt: () -> Unit,
     onExportOriginalSrt: () -> Unit,
@@ -1366,19 +1371,85 @@ fun ExportSheet(
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // Export Actions
-            Button(
-                onClick = onExportWavDub,
+            // Main action: the dubbed video (AI voice replaces the original audio)
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (hasVideo && voicedCount > 0) DarkAccent else DarkCard2)
+                    .clickable(enabled = hasVideo && voicedCount > 0, onClick = onExportVideo)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .testTag("export_video_button")
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.VideoFile,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Export Dubbed Video (.mp4)",
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = when {
+                                !hasVideo -> "This project has no video file"
+                                voicedCount == 0 -> "Generate the AI voices first (Edge TTS Dub)"
+                                else -> "AI voice replaces the original audio · សំឡេង AI ជំនួសសំឡេងដើម"
+                            },
+                            color = Color.White.copy(alpha = 0.8f),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+
+            if (hasVideo && voicedCount > 0) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.BlurOn,
+                        contentDescription = null,
+                        tint = if (blurEnabled) SkyAccent else DarkMuted,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = if (blurEnabled) "Blur box ON: it will be burned into the video" else "Blur box OFF (turn it on with the blur button at the top)",
+                        color = if (blurEnabled) SkyAccent else DarkMuted,
+                        fontSize = 12.sp
+                    )
+                }
+                if (voicedCount < segmentCount) {
+                    Text(
+                        text = "${segmentCount - voicedCount} line(s) have no AI voice yet and will be silent.",
+                        color = Color(0xFFF59E0B),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onExportWavDub,
+                enabled = voicedCount > 0,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
                     .testTag("export_wav_dub_button"),
-                colors = ButtonDefaults.buttonColors(containerColor = DarkAccent),
+                colors = ButtonDefaults.buttonColors(containerColor = DarkCard2),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Icon(imageVector = Icons.Default.GraphicEq, contentDescription = "WAV Dub")
+                Icon(imageVector = Icons.Default.GraphicEq, contentDescription = "WAV Dub", tint = EmeraldAccent)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Export Combined AI Dub (.wav)", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text("Export AI Voice Track only (.wav)", color = DarkFg, fontWeight = FontWeight.SemiBold)
             }
 
             Spacer(modifier = Modifier.height(10.dp))

@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Delete
@@ -54,6 +55,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -73,9 +75,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.SettingsRepository
 import com.example.data.db.SegmentEntity
+import com.example.media.ExportKind
 import com.example.ui.DubberViewModel
 import com.example.ui.components.AudioMixSheet
 import com.example.ui.components.EditSegmentSheet
+import com.example.ui.components.ExportDialog
 import com.example.ui.components.ExportSheet
 import com.example.ui.components.SettingsSheet
 import com.example.ui.components.SpeedAdjustSheet
@@ -135,6 +139,14 @@ fun EditorScreen(
     val toastMessage by viewModel.toastMessage.collectAsState()
     val isDubPlaying by viewModel.isDubPlaying.collectAsState()
     val currentlyPlayingSegmentId by viewModel.currentlyPlayingSegmentId.collectAsState()
+    val seekRequest by viewModel.seekRequest.collectAsState()
+    val blurSettings by viewModel.blurSettings.collectAsState()
+    val exportState by viewModel.exportState.collectAsState()
+
+    // Stop playback when leaving the editor.
+    DisposableEffect(Unit) {
+        onDispose { viewModel.setPlaying(false) }
+    }
 
     var showMenu by remember { mutableStateOf(false) }
     var showAudioSheet by remember { mutableStateOf(false) }
@@ -155,13 +167,19 @@ fun EditorScreen(
         segments.find { currentTime >= it.start && currentTime < it.end }
     }
 
-    LaunchedEffect(activeSegment, isPlaying) {
-        if (isPlaying && activeSegment != null) {
-            val idx = segments.indexOfFirst { it.id == activeSegment.id }
-            if (idx >= 0) {
-                listState.animateScrollToItem(idx)
-            }
-        }
+    // Follow the playing line, but don't move the list if it is already fully visible
+    // (e.g. right after the user tapped it).
+    LaunchedEffect(activeSegment?.id, isPlaying) {
+        val activeId = activeSegment?.id
+        if (!isPlaying || activeId == null) return@LaunchedEffect
+        val idx = segments.indexOfFirst { it.id == activeId }
+        if (idx < 0) return@LaunchedEffect
+        val layout = listState.layoutInfo
+        val item = layout.visibleItemsInfo.firstOrNull { it.index == idx }
+        val fullyVisible = item != null &&
+            item.offset >= layout.viewportStartOffset &&
+            item.offset + item.size <= layout.viewportEndOffset
+        if (!fullyVisible) listState.animateScrollToItem(idx)
     }
 
     val subtitleLauncher = rememberLauncherForActivityResult(
@@ -192,7 +210,7 @@ fun EditorScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(DarkBg2)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(
@@ -220,7 +238,7 @@ fun EditorScreen(
                 )
 
                 // Audio Mix Sheet Button
-                IconButton(onClick = { showAudioSheet = true }) {
+                IconButton(onClick = { showAudioSheet = true }, modifier = Modifier.size(40.dp)) {
                     Icon(
                         imageVector = Icons.Default.MusicNote,
                         contentDescription = "Audio Mix",
@@ -228,8 +246,29 @@ fun EditorScreen(
                     )
                 }
 
+                // Blur box: hides burned-in text, in the preview and in the exported video
+                IconButton(
+                    onClick = {
+                        if (!blurSettings.enabled) {
+                            viewModel.showToast("Blur box on: drag it over the text, drag a corner to resize")
+                        }
+                        viewModel.toggleBlur()
+                    },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(if (blurSettings.enabled) SkyAccent.copy(alpha = 0.18f) else Color.Transparent)
+                        .testTag("editor_blur_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.BlurOn,
+                        contentDescription = if (blurSettings.enabled) "Remove blur box" else "Add blur box",
+                        tint = if (blurSettings.enabled) SkyAccent else DarkFg
+                    )
+                }
+
                 // Voice Personas Sheet Button
-                IconButton(onClick = { showVoiceSheet = true }) {
+                IconButton(onClick = { showVoiceSheet = true }, modifier = Modifier.size(40.dp)) {
                     Icon(
                         imageVector = Icons.Default.GridView,
                         contentDescription = "Voices",
@@ -239,7 +278,7 @@ fun EditorScreen(
 
                 // Overflow Menu
                 Box {
-                    IconButton(onClick = { showMenu = !showMenu }) {
+                    IconButton(onClick = { showMenu = !showMenu }, modifier = Modifier.size(40.dp)) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = "Menu",
@@ -458,6 +497,7 @@ fun EditorScreen(
                 onPlayPauseToggle = { viewModel.setPlaying(it) },
                 currentTimeSec = currentTime,
                 onSeek = { viewModel.seekTo(it) },
+                seekRequest = seekRequest,
                 durationSec = duration,
                 onDurationKnown = { viewModel.setDuration(it) },
                 onTimeUpdate = { viewModel.setTime(it) },
@@ -465,6 +505,11 @@ fun EditorScreen(
                 onMuteToggle = { viewModel.toggleMute() },
                 activeSubtitleText = overlayText,
                 showSubtitles = settings.showSubtitles,
+                onToggleSubtitles = { viewModel.settingsRepository.toggleShowSubtitles() },
+                blurEnabled = blurSettings.enabled,
+                blurRegion = blurSettings.region,
+                onBlurRegionChange = { viewModel.updateBlurRegion(it) },
+                onBlurRegionChangeFinished = { viewModel.commitBlurRegion() },
                 isDubPlaying = isDubPlaying,
                 originalVolume = settings.originalVolume,
                 isTranscribing = isTranscribing
@@ -476,40 +521,40 @@ fun EditorScreen(
                     .fillMaxWidth()
                     .background(DarkBg2)
                     .border(width = 1.dp, color = DarkLine)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(24.dp)
-                        .clip(RoundedCornerShape(6.dp))
+                        .size(20.dp)
+                        .clip(RoundedCornerShape(5.dp))
                         .background(if (allSelected) DarkAccent else DarkCard)
-                        .border(1.dp, if (allSelected) DarkAccent else DarkLine, RoundedCornerShape(6.dp))
+                        .border(1.dp, if (allSelected) DarkAccent else DarkLine, RoundedCornerShape(5.dp))
                         .clickable { viewModel.toggleSelectAll() },
                     contentAlignment = Alignment.Center
                 ) {
                     if (allSelected) {
-                        Icon(Icons.Default.Check, contentDescription = "All", tint = Color.White, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Check, contentDescription = "All", tint = Color.White, modifier = Modifier.size(14.dp))
                     }
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(imageVector = Icons.Default.ClosedCaption, contentDescription = "Subs", tint = DarkMuted, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("${segments.size}", color = DarkFg, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Icon(imageVector = Icons.Default.ClosedCaption, contentDescription = "Subs", tint = DarkMuted, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text("${segments.size}", color = DarkFg, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(imageVector = Icons.Default.Translate, contentDescription = "Tr", tint = SkyAccent, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("$translatedCount", color = SkyAccent, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Icon(imageVector = Icons.Default.Translate, contentDescription = "Tr", tint = SkyAccent, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text("$translatedCount", color = SkyAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(imageVector = Icons.Default.GraphicEq, contentDescription = "Voiced", tint = EmeraldAccent, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("$voicedCount", color = EmeraldAccent, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Icon(imageVector = Icons.Default.GraphicEq, contentDescription = "Voiced", tint = EmeraldAccent, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Text("$voicedCount", color = EmeraldAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
@@ -523,12 +568,12 @@ fun EditorScreen(
                             val nextIndex = (settings.fitIndex + 1) % SettingsRepository.FIT_MODES.size
                             viewModel.settingsRepository.updateFitIndex(nextIndex)
                         }
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
                 ) {
                     Text(
                         text = "Auto-Fit ${fitMode?.label ?: "Off"}",
                         color = DarkMuted,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -606,7 +651,7 @@ fun EditorScreen(
                             isBusy = isBusy,
                             isPlayingThisSegment = isPlayingThisSegment,
                             onSelect = { viewModel.toggleSegmentSelection(seg.id) },
-                            onRowClick = { viewModel.seekTo(seg.start + 0.05) },
+                            onRowClick = { viewModel.seekToSegment(seg) },
                             onGenderToggle = {
                                 val nextGender = if (seg.gender.equals("male", ignoreCase = true)) "female" else "male"
                                 viewModel.updateSegment(seg.copy(gender = nextGender))
@@ -615,7 +660,7 @@ fun EditorScreen(
                             onSpeedClick = { speedAdjustSegment = seg },
                             onPlayClick = { viewModel.previewOrGenerateAudio(seg) }
                         )
-                        HorizontalDivider(color = DarkLine, thickness = 1.dp)
+                        HorizontalDivider(color = DarkLine, thickness = 0.5.dp)
                     }
                 }
             }
@@ -754,12 +799,25 @@ fun EditorScreen(
         )
     }
 
+    ExportDialog(
+        state = exportState,
+        blurEnabled = blurSettings.enabled,
+        onCancel = { viewModel.cancelExport() },
+        onDismiss = { viewModel.dismissExportResult() }
+    )
+
     if (showExportSheet) {
         ExportSheet(
             segmentCount = segments.size,
             translatedCount = translatedCount,
             voicedCount = voicedCount,
+            hasVideo = !project?.videoPath.isNullOrBlank(),
+            blurEnabled = blurSettings.enabled,
             onDismiss = { showExportSheet = false },
+            onExportVideo = {
+                showExportSheet = false
+                viewModel.startExport(ExportKind.VIDEO)
+            },
             onExportSrt = {
                 showExportSheet = false
                 shareText(context, viewModel.exportSrt(false), "${project?.name ?: "dubbed"}.srt")
@@ -774,12 +832,7 @@ fun EditorScreen(
             },
             onExportWavDub = {
                 showExportSheet = false
-                val wavFile = viewModel.exportCombinedWavDub()
-                if (wavFile != null) {
-                    shareFile(context, wavFile, "audio/wav")
-                } else {
-                    viewModel.showToast("No voiced segments to export yet. Generate AI voice first!", true)
-                }
+                viewModel.startExport(ExportKind.AUDIO)
             }
         )
     }
@@ -807,234 +860,222 @@ private fun SegmentRowItem(
     val detectedSpeed = SettingsRepository.calculateAutoSpeed(spokenText, segment.end - segment.start)
     val effectiveSpeed = segment.customSpeed ?: detectedSpeed
     val isCustomSpeed = segment.customSpeed != null
+    val speedHighlighted = isCustomSpeed || detectedSpeed >= 1.4f
 
-    Box(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(if (isActive) DarkAccent.copy(alpha = 0.16f) else DarkBg)
             .clickable(onClick = onRowClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-            .testTag("segment_row_${segment.id}")
+            .padding(start = 8.dp, end = 10.dp, top = 6.dp, bottom = 7.dp)
+            .testTag("segment_row_${segment.id}"),
+        verticalAlignment = Alignment.Top
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Top
+        // Active line marker (always takes its width so rows don't shift)
+        Box(
+            modifier = Modifier
+                .padding(top = 2.dp)
+                .size(width = 3.dp, height = 34.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(if (isActive) DarkAccent else Color.Transparent)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+
+        // Selection checkbox
+        Box(
+            modifier = Modifier
+                .padding(top = 3.dp)
+                .size(20.dp)
+                .clip(RoundedCornerShape(5.dp))
+                .background(if (isSelected) DarkAccent else DarkCard)
+                .border(1.dp, if (isSelected) DarkAccent else DarkLine, RoundedCornerShape(5.dp))
+                .clickable(onClick = onSelect),
+            contentAlignment = Alignment.Center
         ) {
-            // Left active vertical strip
-            if (isActive) {
-                Box(
-                    modifier = Modifier
-                        .size(width = 4.dp, height = 48.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(DarkAccent)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
+            if (isSelected) {
+                Icon(Icons.Default.Check, contentDescription = "Select", tint = Color.White, modifier = Modifier.size(14.dp))
             }
+        }
 
-            // Selection checkbox
-            Box(
-                modifier = Modifier
-                    .padding(top = 4.dp)
-                    .size(24.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (isSelected) DarkAccent else DarkCard)
-                    .border(1.dp, if (isSelected) DarkAccent else DarkLine, RoundedCornerShape(6.dp))
-                    .clickable(onClick = onSelect),
-                contentAlignment = Alignment.Center
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            // Metadata row: index, gender, time, speed, edit, play
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (isSelected) {
-                    Icon(Icons.Default.Check, contentDescription = "Select", tint = Color.White, modifier = Modifier.size(16.dp))
-                }
-            }
+                Text(
+                    text = "${segment.idx}",
+                    color = if (isActive) DarkFg else DarkMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(if (isActive) DarkAccent.copy(alpha = 0.35f) else DarkCard2)
+                        .padding(horizontal = 6.dp, vertical = 1.dp)
+                )
 
-            Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(5.dp))
 
-            Column(modifier = Modifier.weight(1f)) {
-                // Top metadata row: Index, Gender Badge, Timestamps, Reading Speed (clickable), Edit, Play Button
+                // Gender toggle chip
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(if (isMale) SkyAccentBg else FuchsiaAccentBg)
+                        .clickable(onClick = onGenderToggle)
+                        .padding(horizontal = 5.dp, vertical = 1.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Index badge
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (isActive) DarkAccent.copy(alpha = 0.35f) else DarkCard2)
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            text = "${segment.idx}",
-                            color = if (isActive) DarkFg else DarkMuted,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Gender toggle chip
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (isMale) SkyAccentBg else FuchsiaAccentBg)
-                            .clickable(onClick = onGenderToggle)
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = if (isMale) Icons.Default.Male else Icons.Default.Female,
-                                contentDescription = if (isMale) "Male" else "Female",
-                                tint = if (isMale) SkyAccent else FuchsiaAccent,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = if (isMale) "Male" else "Female",
-                                color = if (isMale) SkyAccent else FuchsiaAccent,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Timestamps
-                    Text(
-                        text = "${SubtitleParser.formatTimeDisplay(segment.start)} → ${SubtitleParser.formatTimeDisplay(segment.end)}",
-                        color = DarkMuted,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
+                    Icon(
+                        imageVector = if (isMale) Icons.Default.Male else Icons.Default.Female,
+                        contentDescription = if (isMale) "Male" else "Female",
+                        tint = if (isMale) SkyAccent else FuchsiaAccent,
+                        modifier = Modifier.size(12.dp)
                     )
+                    Spacer(modifier = Modifier.width(2.dp))
+                    Text(
+                        text = if (isMale) "Male" else "Female",
+                        color = if (isMale) SkyAccent else FuchsiaAccent,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
-                    Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.width(6.dp))
 
-                    // Reading speed badge: clickable to manually adjust speed
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(
-                                when {
-                                    isCustomSpeed -> Color(0x33F59E0B)
-                                    detectedSpeed >= 1.4f -> Color(0x22F59E0B)
-                                    else -> DarkCard2
-                                }
-                            )
-                            .border(
-                                1.dp,
-                                when {
-                                    isCustomSpeed -> Color(0xFFF59E0B)
-                                    detectedSpeed >= 1.4f -> Color(0x80F59E0B)
-                                    else -> DarkLine
-                                },
-                                RoundedCornerShape(6.dp)
-                            )
-                            .clickable(onClick = onSpeedClick)
-                            .padding(horizontal = 6.dp, vertical = 3.dp)
-                            .testTag("speed_badge_${segment.id}")
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Speed,
-                                contentDescription = "Speed",
-                                tint = if (isCustomSpeed || detectedSpeed >= 1.4f) Color(0xFFF59E0B) else DarkMuted,
-                                modifier = Modifier.size(12.dp)
-                            )
-                            Spacer(modifier = Modifier.width(2.dp))
-                            Text(
-                                text = "%.1fx".format(effectiveSpeed) + (if (isCustomSpeed) "★" else ""),
-                                color = if (isCustomSpeed || detectedSpeed >= 1.4f) Color(0xFFF59E0B) else DarkMuted,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
+                Text(
+                    text = "${SubtitleParser.formatTimeDisplay(segment.start)} → ${SubtitleParser.formatTimeDisplay(segment.end)}",
+                    color = DarkMuted,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
 
-                    Spacer(modifier = Modifier.width(4.dp))
+                // Reading speed badge: tap to adjust
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(
+                            when {
+                                isCustomSpeed -> Color(0x33F59E0B)
+                                detectedSpeed >= 1.4f -> Color(0x22F59E0B)
+                                else -> DarkCard2
+                            }
+                        )
+                        .border(
+                            1.dp,
+                            when {
+                                isCustomSpeed -> Color(0xFFF59E0B)
+                                detectedSpeed >= 1.4f -> Color(0x80F59E0B)
+                                else -> DarkLine
+                            },
+                            RoundedCornerShape(5.dp)
+                        )
+                        .clickable(onClick = onSpeedClick)
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                        .testTag("speed_badge_${segment.id}"),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Speed,
+                        contentDescription = "Speed",
+                        tint = if (speedHighlighted) Color(0xFFF59E0B) else DarkMuted,
+                        modifier = Modifier.size(11.dp)
+                    )
+                    Spacer(modifier = Modifier.width(2.dp))
+                    Text(
+                        text = "%.1fx".format(effectiveSpeed) + (if (isCustomSpeed) "★" else ""),
+                        color = if (speedHighlighted) Color(0xFFF59E0B) else DarkMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
-                    // Edit text button
-                    IconButton(
-                        onClick = onEditClick,
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("edit_button_${segment.id}")
-                    ) {
+                // Edit text button
+                Box(
+                    modifier = Modifier
+                        .padding(start = 2.dp)
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onEditClick)
+                        .testTag("edit_button_${segment.id}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit segment",
+                        tint = DarkMuted,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+
+                // Play / generate the AI voice of this line
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                isPlayingThisSegment -> EmeraldAccent
+                                hasAudio -> EmeraldAccent.copy(alpha = 0.2f)
+                                else -> DarkCard2
+                            }
+                        )
+                        .border(
+                            1.dp,
+                            when {
+                                isPlayingThisSegment -> EmeraldAccent
+                                hasAudio -> EmeraldAccent.copy(alpha = 0.7f)
+                                else -> DarkLine
+                            },
+                            CircleShape
+                        )
+                        .clickable(enabled = !isBusy, onClick = onPlayClick)
+                        .testTag("play_segment_${segment.id}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isBusy) {
+                        CircularProgressIndicator(
+                            color = if (hasAudio) EmeraldAccent else DarkAccent,
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
                         Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = "Edit segment",
-                            tint = DarkMuted,
+                            imageVector = if (isPlayingThisSegment) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlayingThisSegment) "Pause dub" else if (hasAudio) "Play dub" else "Generate & Play TTS",
+                            tint = when {
+                                isPlayingThisSegment -> Color.Black
+                                hasAudio -> EmeraldAccent
+                                else -> DarkFg
+                            },
                             modifier = Modifier.size(16.dp)
                         )
                     }
-
-                    Spacer(modifier = Modifier.width(2.dp))
-
-                    // Play button (Replaced waveform icon as requested with arrows)
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    isPlayingThisSegment -> EmeraldAccent
-                                    hasAudio -> EmeraldAccent.copy(alpha = 0.2f)
-                                    else -> DarkCard2
-                                }
-                            )
-                            .border(
-                                1.dp,
-                                when {
-                                    isPlayingThisSegment -> EmeraldAccent
-                                    hasAudio -> EmeraldAccent.copy(alpha = 0.7f)
-                                    else -> DarkLine
-                                },
-                                CircleShape
-                            )
-                            .clickable(enabled = !isBusy, onClick = onPlayClick)
-                            .testTag("play_segment_${segment.id}"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (isBusy) {
-                            CircularProgressIndicator(
-                                color = if (hasAudio) EmeraldAccent else DarkAccent,
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(
-                                imageVector = if (isPlayingThisSegment) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = if (isPlayingThisSegment) "Pause dub" else if (hasAudio) "Play dub" else "Generate & Play TTS",
-                                tint = when {
-                                    isPlayingThisSegment -> Color.Black
-                                    hasAudio -> EmeraldAccent
-                                    else -> DarkFg
-                                },
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
                 }
+            }
 
-                // Translated text (prominent)
+            // Translated text (prominent)
+            Text(
+                text = segment.translation ?: segment.text,
+                color = if (!segment.translation.isNullOrBlank()) DarkFg else DarkFg.copy(alpha = 0.85f),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                lineHeight = 19.sp,
+                modifier = Modifier.padding(top = 3.dp)
+            )
+
+            // Original text (if translation exists)
+            if (!segment.translation.isNullOrBlank()) {
                 Text(
-                    text = segment.translation ?: segment.text,
-                    color = if (!segment.translation.isNullOrBlank()) DarkFg else DarkFg.copy(alpha = 0.85f),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    lineHeight = 22.sp,
-                    modifier = Modifier.padding(top = 6.dp)
+                    text = segment.text,
+                    color = DarkMuted,
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    modifier = Modifier.padding(top = 1.dp)
                 )
-
-                // Original text (if translation exists)
-                if (!segment.translation.isNullOrBlank()) {
-                    Text(
-                        text = segment.text,
-                        color = DarkMuted,
-                        fontSize = 13.sp,
-                        lineHeight = 17.sp,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
-                }
             }
         }
     }
@@ -1047,23 +1088,4 @@ private fun shareText(context: android.content.Context, content: String, title: 
         type = "text/plain"
     }
     context.startActivity(Intent.createChooser(sendIntent, title))
-}
-
-private fun shareFile(context: android.content.Context, file: java.io.File, mime: String) {
-    try {
-        val uri = androidx.core.content.FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
-        val sendIntent = Intent().apply {
-            action = Intent.ACTION_SEND
-            putExtra(Intent.EXTRA_STREAM, uri)
-            type = mime
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        context.startActivity(Intent.createChooser(sendIntent, "Share Dubbed Audio"))
-    } catch (e: Exception) {
-        shareText(context, file.name, "Share Audio")
-    }
 }

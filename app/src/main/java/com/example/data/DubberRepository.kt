@@ -129,6 +129,7 @@ class DubberRepository(
                 }
             }
             projectDao.deleteProjectById(projectId)
+            settingsRepository.clearBlurSettings(projectId)
         }
     }
 

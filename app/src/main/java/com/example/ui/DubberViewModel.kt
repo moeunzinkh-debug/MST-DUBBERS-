@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.app.Application
 import android.media.AudioAttributes
+import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
@@ -17,15 +18,34 @@ import com.example.data.db.AppDatabase
 import com.example.data.db.ProjectEntity
 import com.example.data.db.ProjectWithStats
 import com.example.data.db.SegmentEntity
+import com.example.media.BlurRegion
+import com.example.media.BlurSettings
+import com.example.media.DubTimeline
+import com.example.media.DubTrackRenderer
+import com.example.media.ExportKind
+import com.example.media.ExportStage
+import com.example.media.ExportUiState
+import com.example.media.MediaSaver
+import com.example.media.SavedMedia
+import com.example.media.SeekRequest
+import com.example.media.VideoExporter
 import com.example.util.Cue
 import com.example.util.SubtitleParser
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class ProgressState(val done: Int, val total: Int)
 
@@ -130,6 +150,26 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
     private var dubMediaPlayer: MediaPlayer? = null
     private var activeDubSegmentId: Long? = null
 
+    /** Line whose voice was last started by the timeline; each line is voiced once per pass. */
+    private var lastDubTriggerSegmentId: Long? = null
+
+    // Seeking: the player observes these requests (tapping a line, the seek bar, ...)
+    private val _seekRequest = MutableStateFlow<SeekRequest?>(null)
+    val seekRequest: StateFlow<SeekRequest?> = _seekRequest.asStateFlow()
+    private var seekToken = 0L
+
+    // Blur box of the current project
+    private val _blurSettings = MutableStateFlow(BlurSettings())
+    val blurSettings: StateFlow<BlurSettings> = _blurSettings.asStateFlow()
+
+    // Video / audio export
+    private val _exportState = MutableStateFlow<ExportUiState>(ExportUiState.Idle)
+    val exportState: StateFlow<ExportUiState> = _exportState.asStateFlow()
+    private var exportJob: Job? = null
+
+    private var loadedProjectId: Long? = null
+    private var projectJobs: List<Job> = emptyList()
+
     fun showToast(msg: String, isError: Boolean = false) {
         _toastMessage.value = Pair(msg, isError)
     }
@@ -147,25 +187,43 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun loadProject(projectId: Long) {
-        viewModelScope.launch {
-            repository.observeProject(projectId).collect { proj ->
-                _currentProject.value = proj
-                proj?.let {
-                    if (it.duration > 0.0) _duration.value = it.duration
+        // Stop observing the previously opened project, otherwise its updates would leak in.
+        projectJobs.forEach { it.cancel() }
+        if (loadedProjectId != projectId) {
+            loadedProjectId = projectId
+            stopDubAudio()
+            lastDubTriggerSegmentId = null
+            _isPlaying.value = false
+            _currentTime.value = 0.0
+            _duration.value = 0.0
+            _currentProject.value = null
+            _currentSegments.value = emptyList()
+            _selectedSegmentIds.value = emptySet()
+            _seekRequest.value = SeekRequest(0.0, ++seekToken)
+            _blurSettings.value = settingsRepository.loadBlurSettings(projectId)
+        }
+        projectJobs = listOf(
+            viewModelScope.launch {
+                repository.observeProject(projectId).collect { proj ->
+                    _currentProject.value = proj
+                    proj?.let {
+                        if (it.duration > 0.0) _duration.value = it.duration
+                    }
+                }
+            },
+            viewModelScope.launch {
+                repository.observeSegments(projectId).collect { segs ->
+                    _currentSegments.value = segs
                 }
             }
-        }
-        viewModelScope.launch {
-            repository.observeSegments(projectId).collect { segs ->
-                _currentSegments.value = segs
-            }
-        }
+        )
     }
 
     fun setPlaying(playing: Boolean) {
         _isPlaying.value = playing
         if (!playing) {
             stopDubAudio()
+            lastDubTriggerSegmentId = null
         }
     }
 
@@ -191,9 +249,20 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         _isMuted.value = !_isMuted.value
     }
 
+    /** Moves the video to [time] (seconds), whether it is playing or paused. */
     fun seekTo(time: Double) {
         stopDubAudio()
-        _currentTime.value = time
+        lastDubTriggerSegmentId = null
+        val duration = _duration.value
+        val target = if (duration > 0.0) time.coerceIn(0.0, duration) else time.coerceAtLeast(0.0)
+        _currentTime.value = target
+        _seekRequest.value = SeekRequest(target, ++seekToken)
+    }
+
+    /** Jumps to the start of a subtitle line (tapping a line in the list). */
+    fun seekToSegment(segment: SegmentEntity) {
+        // A hair after the start so this line, not the previous one, is the active one.
+        seekTo(segment.start + 0.05)
     }
 
     fun toggleSegmentSelection(id: Long) {
@@ -392,28 +461,31 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun fitMaxRate(): Float =
+        SettingsRepository.FIT_MODES.getOrNull(settings.value.fitIndex)?.rate ?: DubTimeline.DEFAULT_MAX_RATE
+
     private fun checkAndTriggerDubAudio(time: Double) {
-        val currentSettings = settings.value
-        if (!currentSettings.dubEnabled || !_isPlaying.value) {
-            if (_isDubPlaying.value) stopDubAudio()
+        if (!settings.value.dubEnabled || !_isPlaying.value) {
+            if (activeDubSegmentId != null) stopDubAudio()
             return
         }
+        // Between two lines: let the current voice finish (the export does the same).
+        val seg = _currentSegments.value.find { time >= it.start && time < it.end } ?: return
+        if (seg.id == lastDubTriggerSegmentId) return
+        lastDubTriggerSegmentId = seg.id
 
-        val seg = _currentSegments.value.find { time >= it.start && time < it.end }
-        if (seg != null && !seg.audioPath.isNullOrBlank()) {
-            if (activeDubSegmentId != seg.id) {
-                activeDubSegmentId = seg.id
-                val offsetSec = (time - seg.start).coerceAtLeast(0.0)
-                playDubAudioForSegment(seg, offsetSec)
-            }
-        } else {
-            if (activeDubSegmentId != null) {
-                stopDubAudio()
-            }
+        if (!seg.audioPath.isNullOrBlank()) {
+            val rate = DubTimeline.playbackRate(seg, fitMaxRate())
+            // Starting mid-line (after a seek): skip the part of the voice that is already past.
+            val mediaOffsetSec = (time - seg.start).coerceAtLeast(0.0) * rate
+            playDubAudioForSegment(seg, rate, mediaOffsetSec)
+        } else if (activeDubSegmentId != null) {
+            // The next line has no voice: cut the previous one, as the export does.
+            stopDubAudio()
         }
     }
 
-    private fun playDubAudioForSegment(seg: SegmentEntity, offsetSec: Double = 0.0) {
+    private fun playDubAudioForSegment(seg: SegmentEntity, rate: Float, mediaOffsetSec: Double) {
         val path = seg.audioPath ?: return
         val file = File(path)
         if (!file.exists()) return
@@ -431,29 +503,31 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .build()
                 )
-                val fitMode = SettingsRepository.FIT_MODES.getOrNull(settings.value.fitIndex)
-                val maxRate = fitMode?.rate ?: 1.35f
-                val slot = (seg.end - seg.start).coerceAtLeast(0.3)
-                val dur = seg.audioDuration ?: slot
-                val autoSpeed = (dur / slot).toFloat().coerceIn(1.0f, maxRate)
-                val targetSpeed = seg.customSpeed ?: autoSpeed
 
                 setOnPreparedListener { mp ->
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        try {
-                            val params = mp.playbackParams
-                            params.speed = targetSpeed
-                            mp.playbackParams = params
-                        } catch (e: Exception) {
-                            // Ignore
-                        }
+                    if (dubMediaPlayer != mp) {
+                        mp.release()
+                        return@setOnPreparedListener
+                    }
+                    val offsetMs = (mediaOffsetSec * 1000).toInt()
+                    if (offsetMs >= mp.duration - 50) {
+                        // This line's voice would already be over at this position.
+                        mp.release()
+                        dubMediaPlayer = null
+                        activeDubSegmentId = null
+                        _currentlyPlayingSegmentId.value = null
+                        _isDubPlaying.value = false
+                        return@setOnPreparedListener
                     }
                     val vol = settings.value.dubVolume.coerceIn(0f, 1f)
                     mp.setVolume(vol, vol)
-
-                    val offsetMs = (offsetSec * 1000).toInt()
-                    if (offsetMs > 80 && offsetMs < mp.duration) {
-                        mp.seekTo(offsetMs)
+                    if (offsetMs > 80) mp.seekTo(offsetMs)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
+                            mp.playbackParams = mp.playbackParams.setSpeed(rate)
+                        } catch (e: Exception) {
+                            // Ignore: play at normal speed
+                        }
                     }
                     mp.start()
                     _isDubPlaying.value = true
@@ -576,20 +650,139 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         return SubtitleParser.toVtt(cues)
     }
 
-    fun exportCombinedWavDub(): File? {
-        val segs = _currentSegments.value.filter { !it.audioPath.isNullOrBlank() }
-        if (segs.isEmpty()) return null
+    // ---------------------------------------------------------------- Blur box
 
-        val appDir = getApplication<Application>().cacheDir
-        val exportFile = File(appDir, "${_currentProject.value?.name ?: "dub"}_ai_dub.wav")
+    fun toggleBlur() = setBlurEnabled(!_blurSettings.value.enabled)
 
-        val firstAudio = File(segs.first().audioPath!!)
-        if (firstAudio.exists()) {
-            firstAudio.copyTo(exportFile, overwrite = true)
-            return exportFile
-        }
-        return null
+    fun setBlurEnabled(enabled: Boolean) {
+        val updated = _blurSettings.value.copy(enabled = enabled)
+        _blurSettings.value = updated
+        persistBlur(updated)
     }
+
+    /** Live update while the box is being dragged; call [commitBlurRegion] when the drag ends. */
+    fun updateBlurRegion(region: BlurRegion) {
+        _blurSettings.value = _blurSettings.value.copy(region = region.sanitized())
+    }
+
+    fun commitBlurRegion() = persistBlur(_blurSettings.value)
+
+    private fun persistBlur(blur: BlurSettings) {
+        loadedProjectId?.let { settingsRepository.saveBlurSettings(it, blur) }
+    }
+
+    // ---------------------------------------------------------------- Export
+
+    /**
+     * Exports the dubbed video (the AI voice replaces the original audio; the blur box, if on, is
+     * burned in) or, for [ExportKind.AUDIO], just the full-length AI voice track as WAV.
+     */
+    fun startExport(kind: ExportKind) {
+        if (exportJob?.isActive == true) return
+        val project = _currentProject.value ?: return
+        val videoFile = project.videoPath.takeIf { it.isNotBlank() }?.let { File(it) }
+        if (kind == ExportKind.VIDEO && (videoFile == null || !videoFile.exists())) {
+            showToast("This project has no video file to export.", true)
+            return
+        }
+        setPlaying(false)
+        val segments = _currentSegments.value
+        val blur = _blurSettings.value.takeIf { it.enabled }?.region
+        val app = getApplication<Application>()
+
+        exportJob = viewModelScope.launch {
+            try {
+                _exportState.value = ExportUiState.Running(kind, ExportStage.BUILDING_VOICE_TRACK, 0f)
+                val fileDuration = if (videoFile != null && videoFile.exists()) {
+                    withContext(Dispatchers.IO) { readDurationSec(videoFile) }
+                } else 0.0
+                val durationSec = fileDuration.takeIf { it > 0.0 }
+                    ?: _duration.value.takeIf { it > 0.0 }
+                    ?: (segments.maxOfOrNull { it.end } ?: 0.0)
+
+                val clips = DubTimeline.plan(segments, fitMaxRate(), durationSec)
+                if (clips.isEmpty()) {
+                    throw IllegalStateException("No AI voice yet. Tap \"Edge TTS Dub\" to generate the voices first.")
+                }
+
+                val workDir = File(app.cacheDir, "export").apply { mkdirs() }
+                val baseName = MediaSaver.safeFileName("${project.name}_dub_${timestamp()}")
+                val wavFile = File(workDir, if (kind == ExportKind.AUDIO) "$baseName.wav" else "dub_track.wav")
+                val track = withContext(Dispatchers.IO) {
+                    DubTrackRenderer.render(
+                        clips = clips,
+                        durationSec = durationSec,
+                        output = wavFile,
+                        onClipDone = { done, total ->
+                            _exportState.value = ExportUiState.Running(
+                                kind, ExportStage.BUILDING_VOICE_TRACK, done.toFloat() / total.coerceAtLeast(1)
+                            )
+                        },
+                        checkCancelled = { ensureActive() }
+                    )
+                }
+                if (track.clipsWritten == 0) {
+                    throw IllegalStateException("Could not read the AI voice files. Regenerate the voices and try again.")
+                }
+
+                if (kind == ExportKind.AUDIO) {
+                    _exportState.value = ExportUiState.Done(
+                        kind, SavedMedia(null, wavFile, "App cache"), "audio/wav", track.clipsFailed
+                    )
+                    return@launch
+                }
+
+                _exportState.value = ExportUiState.Running(kind, ExportStage.ENCODING_VIDEO, 0f)
+                val mp4File = File(workDir, "$baseName.mp4")
+                VideoExporter(app).export(
+                    videoFile = videoFile!!,
+                    audioFile = wavFile,
+                    blur = blur,
+                    output = mp4File
+                ) { percent ->
+                    _exportState.value = ExportUiState.Running(kind, ExportStage.ENCODING_VIDEO, percent / 100f)
+                }
+                wavFile.delete()
+
+                _exportState.value = ExportUiState.Running(kind, ExportStage.SAVING, null)
+                val saved = withContext(Dispatchers.IO) { MediaSaver.saveVideo(app, mp4File, mp4File.name) }
+                _exportState.value = ExportUiState.Done(kind, saved, "video/mp4", track.clipsFailed)
+            } catch (e: CancellationException) {
+                _exportState.value = ExportUiState.Idle
+                throw e
+            } catch (e: Exception) {
+                _exportState.value = ExportUiState.Failed(kind, e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
+    fun cancelExport() {
+        exportJob?.cancel()
+        exportJob = null
+        _exportState.value = ExportUiState.Idle
+    }
+
+    fun dismissExportResult() {
+        if (_exportState.value !is ExportUiState.Running) _exportState.value = ExportUiState.Idle
+    }
+
+    private fun readDurationSec(file: File): Double {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toDoubleOrNull() ?: 0.0) / 1000.0
+        } catch (e: Exception) {
+            0.0
+        } finally {
+            try {
+                retriever.release()
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+    }
+
+    private fun timestamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
 
     override fun onCleared() {
         super.onCleared()
