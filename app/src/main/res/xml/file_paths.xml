@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="cache" path="." />
     <files-path name="files" path="." />
+    <!-- Exported videos on Android 9 and older (Movies/MST DUBBERS inside the app's folder). -->
+    <external-files-path name="external_files" path="." />
 </paths>

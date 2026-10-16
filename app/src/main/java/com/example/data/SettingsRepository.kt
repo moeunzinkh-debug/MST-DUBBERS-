@@ -3,6 +3,10 @@ package com.example.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.BuildConfig
+import com.example.data.api.GeminiModels
+import com.example.media.BlurRegion
+import com.example.media.BlurSettings
+import com.example.media.BlurStrength
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,6 +17,7 @@ data class FitMode(val label: String, val rate: Float)
 
 data class AppSettings(
     val apiKey: String = "", // Gemini API key
+    val geminiModel: String = GeminiModels.DEFAULT, // see GeminiModels.OPTIONS (3.8 Flash / 3.6 Flash)
     val groqApiKey: String = "",
     val sealionApiKey: String = "",
     val sealionModel: String = "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
@@ -40,6 +45,9 @@ class SettingsRepository(private val context: Context) {
         context.getSharedPreferences("mst_dubbers_prefs", Context.MODE_PRIVATE)
 
     companion object {
+        /** Placeholder from `.env.example`, compiled in when a build has no `.env` (e.g. CI). Not a real key. */
+        private const val PLACEHOLDER_API_KEY = "MY_GEMINI_API_KEY"
+
         const val ABOUT_TEXT = "នេះជាកម្មវិធី បកប្រែវីដេអូពីភាសាផ្សេងទៅជាភាសាខ្មែរ ឬភាសាផ្សេងទៀត ដោយផ្ទាល់នៅក្នុងកម្មវិធីរបស់យើង អ្នកទាំងអស់គ្នាអាចប្រើប្រាស់ដោយឥតគិតថ្លៃ ដោយត្រឹមតែអ្នកទាំងអស់គ្នាមាន Key API."
 
         val FIT_MODES = listOf(
@@ -114,10 +122,14 @@ class SettingsRepository(private val context: Context) {
             ""
         }
         val storedKey = prefs.getString("api_key", "") ?: ""
-        val effectiveKey = if (storedKey.isNotBlank()) storedKey else buildKey
+        // Treat the .env.example placeholder as "no key" so the user is asked to enter their own.
+        val effectiveKey = (if (storedKey.isNotBlank()) storedKey else buildKey)
+            .takeUnless { it.trim() == PLACEHOLDER_API_KEY }
+            .orEmpty()
 
         return AppSettings(
             apiKey = effectiveKey,
+            geminiModel = GeminiModels.resolve(prefs.getString("gemini_model", GeminiModels.DEFAULT)),
             groqApiKey = prefs.getString("groq_api_key", "") ?: "",
             sealionApiKey = prefs.getString("sealion_api_key", "") ?: "",
             sealionModel = prefs.getString("sealion_model", "aisingapore/Qwen-SEA-LION-v4.5-27B-IT") ?: "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
@@ -146,6 +158,7 @@ class SettingsRepository(private val context: Context) {
     fun saveSettings(updated: AppSettings) {
         prefs.edit()
             .putString("api_key", updated.apiKey.trim())
+            .putString("gemini_model", updated.geminiModel)
             .putString("groq_api_key", updated.groqApiKey.trim())
             .putString("sealion_api_key", updated.sealionApiKey.trim())
             .putString("sealion_model", updated.sealionModel.trim())
@@ -168,10 +181,13 @@ class SettingsRepository(private val context: Context) {
 
     fun updateSettings(
         apiKey: String,
+        // Optional values default to the current setting so callers that omit them
+        // (e.g. the voice picker) don't reset them.
+        geminiModel: String = _settings.value.geminiModel,
         groqApiKey: String,
         sealionApiKey: String,
-        sealionModel: String = "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
-        sealionUrl: String = "https://api.together.xyz/v1/chat/completions",
+        sealionModel: String = _settings.value.sealionModel,
+        sealionUrl: String = _settings.value.sealionUrl,
         transcriptionEngine: String,
         translationEngine: String,
         customApiName: String,
@@ -186,6 +202,7 @@ class SettingsRepository(private val context: Context) {
     ) {
         prefs.edit()
             .putString("api_key", apiKey.trim())
+            .putString("gemini_model", geminiModel)
             .putString("groq_api_key", groqApiKey.trim())
             .putString("sealion_api_key", sealionApiKey.trim())
             .putString("sealion_model", sealionModel.trim())
@@ -205,6 +222,7 @@ class SettingsRepository(private val context: Context) {
 
         _settings.value = _settings.value.copy(
             apiKey = apiKey.trim(),
+            geminiModel = geminiModel,
             groqApiKey = groqApiKey.trim(),
             sealionApiKey = sealionApiKey.trim(),
             sealionModel = sealionModel.trim(),
@@ -247,6 +265,36 @@ class SettingsRepository(private val context: Context) {
         prefs.edit().putBoolean("show_subtitles", next).apply()
         _settings.value = _settings.value.copy(showSubtitles = next)
     }
+
+    /** The blur box of a project (off, at the default position and strength, if never set). */
+    fun loadBlurSettings(projectId: Long): BlurSettings {
+        val region = BlurRegion.decode(prefs.getString(blurRegionKey(projectId), null)) ?: BlurRegion.DEFAULT
+        return BlurSettings(
+            enabled = prefs.getBoolean(blurEnabledKey(projectId), false),
+            region = region,
+            strength = BlurStrength.clamp(prefs.getFloat(blurStrengthKey(projectId), BlurStrength.DEFAULT))
+        )
+    }
+
+    fun saveBlurSettings(projectId: Long, blur: BlurSettings) {
+        prefs.edit()
+            .putBoolean(blurEnabledKey(projectId), blur.enabled)
+            .putString(blurRegionKey(projectId), blur.region.sanitized().encode())
+            .putFloat(blurStrengthKey(projectId), BlurStrength.clamp(blur.strength))
+            .apply()
+    }
+
+    fun clearBlurSettings(projectId: Long) {
+        prefs.edit()
+            .remove(blurEnabledKey(projectId))
+            .remove(blurRegionKey(projectId))
+            .remove(blurStrengthKey(projectId))
+            .apply()
+    }
+
+    private fun blurEnabledKey(projectId: Long) = "blur_enabled_$projectId"
+    private fun blurRegionKey(projectId: Long) = "blur_region_$projectId"
+    private fun blurStrengthKey(projectId: Long) = "blur_strength_$projectId"
 
     fun clearCache(): Long {
         var freedBytes = 0L

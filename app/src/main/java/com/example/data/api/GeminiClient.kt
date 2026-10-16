@@ -27,7 +27,8 @@ data class TranslateItem(
 )
 
 class GeminiClient(
-    private val apiKeyProvider: () -> String
+    private val apiKeyProvider: () -> String,
+    private val modelProvider: () -> String = { GeminiModels.DEFAULT }
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -84,14 +85,15 @@ class GeminiClient(
             contentsArray.put(contentObj)
             put("contents", contentsArray)
 
+            // No temperature/topP/topK: Gemini 3.6+ ignores them (future models reject them).
             val genConfig = JSONObject().apply {
                 put("responseMimeType", "application/json")
-                put("temperature", 0.4)
             }
             put("generationConfig", genConfig)
         }
 
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+        val model = GeminiModels.resolve(modelProvider())
+        val url = GeminiModels.generateContentUrl(model, apiKey)
         val request = Request.Builder()
             .url(url)
             .post(requestJson.toString().toRequestBody(jsonMediaType))
@@ -100,7 +102,7 @@ class GeminiClient(
         val response = client.newCall(request).execute()
         val responseBody = response.body?.string() ?: ""
         if (!response.isSuccessful) {
-            val errorMsg = parseErrorMessage(responseBody) ?: "Gemini API error ${response.code}"
+            val errorMsg = parseErrorMessage(responseBody) ?: "Gemini API error ($model) ${response.code}"
             throw IOException(errorMsg)
         }
 
@@ -143,14 +145,15 @@ class GeminiClient(
             contentsArray.put(contentObj)
             put("contents", contentsArray)
 
+            // No temperature/topP/topK: Gemini 3.6+ ignores them (future models reject them).
             val genConfig = JSONObject().apply {
                 put("responseMimeType", "application/json")
-                put("temperature", 0.3)
             }
             put("generationConfig", genConfig)
         }
 
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+        val model = GeminiModels.resolve(modelProvider())
+        val url = GeminiModels.generateContentUrl(model, apiKey)
         val request = Request.Builder()
             .url(url)
             .post(requestJson.toString().toRequestBody(jsonMediaType))
@@ -159,7 +162,7 @@ class GeminiClient(
         val response = client.newCall(request).execute()
         val responseBody = response.body?.string() ?: ""
         if (!response.isSuccessful) {
-            val errorMsg = parseErrorMessage(responseBody) ?: "Gemini error ${response.code}"
+            val errorMsg = parseErrorMessage(responseBody) ?: "Gemini error ($model) ${response.code}"
             throw IOException(errorMsg)
         }
 

@@ -4,8 +4,10 @@ import android.content.Context
 import android.net.Uri
 import com.example.data.api.EdgeTtsClient
 import com.example.data.api.GeminiClient
+import com.example.data.api.SpeakableText
 import com.example.data.api.TranscriptionClient
 import com.example.data.api.TranslationClient
+import com.example.data.api.TtsException
 import com.example.data.db.AppDatabase
 import com.example.data.db.ProjectEntity
 import com.example.data.db.ProjectWithStats
@@ -129,6 +131,7 @@ class DubberRepository(
                 }
             }
             projectDao.deleteProjectById(projectId)
+            settingsRepository.clearBlurSettings(projectId)
         }
     }
 
@@ -273,9 +276,21 @@ class DubberRepository(
         updatedCount
     }
 
-    suspend fun generateVoiceForSegment(segmentId: Long): SegmentEntity = withContext(Dispatchers.IO) {
+    /**
+     * Makes the AI voice of one line with the Edge TTS server and saves it on the line.
+     *
+     * If the server fails and [allowGeminiFallback] is true, Gemini TTS is tried instead (only
+     * when a Gemini API key is set). Batch generation turns the fallback on only for the last
+     * attempt of a line, so a brief server problem doesn't use up the small Gemini TTS quota.
+     *
+     * @throws TtsException telling why the line couldn't be voiced and whether retrying may help.
+     */
+    suspend fun generateVoiceForSegment(
+        segmentId: Long,
+        allowGeminiFallback: Boolean = true
+    ): SegmentEntity = withContext(Dispatchers.IO) {
         val seg = segmentDao.getSegmentById(segmentId)
-            ?: throw IllegalStateException("Segment not found")
+            ?: throw TtsException("This line no longer exists", TtsException.Kind.PERMANENT)
 
         val settings = settingsRepository.settings.value
         val voiceName = if (seg.gender.equals("male", ignoreCase = true)) {
@@ -285,8 +300,8 @@ class DubberRepository(
         }
 
         val textToSpeak = (seg.translation?.takeIf { it.isNotBlank() } ?: seg.text).trim()
-        if (textToSpeak.isEmpty()) {
-            throw IllegalStateException("Segment text is empty")
+        if (!SpeakableText.hasWords(textToSpeak)) {
+            throw TtsException(EdgeTtsClient.NO_WORDS_MESSAGE, TtsException.Kind.NOTHING_TO_SPEAK)
         }
 
         val audioDir = File(context.filesDir, "audio_dubs").apply { mkdirs() }
@@ -308,16 +323,33 @@ class DubberRepository(
                 destFile = audioFile
             )
         } catch (e: Exception) {
-            // Fallback to Gemini TTS if custom Edge server is temporarily unreachable
-            val pcmBytes = geminiClient.generateSpeech(
-                text = textToSpeak,
-                voiceName = if (seg.gender.equals("male", ignoreCase = true)) "Charon" else "Kore",
-                stylePrompt = "Say expressively"
-            )
-            val wavFile = File(audioDir, "a_${seg.id}_${System.currentTimeMillis()}.wav")
-            durationSec = WavHelper.saveWavFile(wavFile, pcmBytes)
+            if (e is kotlinx.coroutines.CancellationException) throw e
             audioFile.delete()
-            wavFile.renameTo(audioFile)
+            val edgeError = TtsException.from(e)
+            if (!allowGeminiFallback || settings.apiKey.isBlank() ||
+                edgeError.kind == TtsException.Kind.NOTHING_TO_SPEAK
+            ) {
+                throw edgeError
+            }
+            // Fallback to Gemini TTS if the Edge server keeps failing
+            try {
+                val pcmBytes = geminiClient.generateSpeech(
+                    text = textToSpeak,
+                    voiceName = if (seg.gender.equals("male", ignoreCase = true)) "Charon" else "Kore",
+                    stylePrompt = "Say expressively"
+                )
+                val wavFile = File(audioDir, "a_${seg.id}_${System.currentTimeMillis()}.wav")
+                durationSec = WavHelper.saveWavFile(wavFile, pcmBytes)
+                wavFile.renameTo(audioFile)
+            } catch (geminiError: Exception) {
+                if (geminiError is kotlinx.coroutines.CancellationException) throw geminiError
+                throw TtsException(
+                    "${edgeError.message}. Gemini TTS backup also failed: ${geminiError.message}",
+                    edgeError.kind,
+                    edgeError.retryAfterSec,
+                    geminiError
+                )
+            }
         }
 
         seg.audioPath?.let { oldPath ->
