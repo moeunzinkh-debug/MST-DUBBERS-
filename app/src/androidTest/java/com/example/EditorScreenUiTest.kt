@@ -104,7 +104,7 @@ class EditorScreenUiTest {
     composeRule.waitUntil(15_000) { viewModel.duration.value > 3.0 }
     Thread.sleep(1_200) // first frame + blur preview snapshot
     composeRule.waitForIdle()
-    composeRule.onNodeWithTag("blur_box").assertExists()
+    composeRule.onNodeWithTag("blur_box", useUnmergedTree = true).assertExists()
     composeRule.onNodeWithTag("player_subtitles_button").assertExists()
     logScreenshot("editor_paused")
 
@@ -137,7 +137,7 @@ class EditorScreenUiTest {
 
     // Drag the blur box up, then make it bigger from its bottom-right corner.
     val before = viewModel.blurSettings.value.region
-    composeRule.onNodeWithTag("blur_box").performTouchInput {
+    composeRule.onNodeWithTag("blur_box", useUnmergedTree = true).performTouchInput {
       swipe(start = center, end = center + Offset(0f, -60f), durationMillis = 400)
     }
     composeRule.waitForIdle()
@@ -145,7 +145,7 @@ class EditorScreenUiTest {
     assertTrue("box moved up: $before -> $moved", moved.top < before.top - 0.02f)
     assertEquals(before.width, moved.width, 0.001f)
 
-    composeRule.onNodeWithTag("blur_handle_bottom_right").performTouchInput {
+    composeRule.onNodeWithTag("blur_handle_bottom_right", useUnmergedTree = true).performTouchInput {
       swipe(start = center, end = center + Offset(-40f, 50f), durationMillis = 400)
     }
     composeRule.waitForIdle()
