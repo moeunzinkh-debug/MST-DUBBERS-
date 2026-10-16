@@ -1,0 +1,346 @@
+package com.example.data
+
+import android.content.Context
+import android.net.Uri
+import com.example.data.api.EdgeTtsClient
+import com.example.data.api.GeminiClient
+import com.example.data.api.TranscriptionClient
+import com.example.data.api.TranslationClient
+import com.example.data.db.AppDatabase
+import com.example.data.db.ProjectEntity
+import com.example.data.db.ProjectWithStats
+import com.example.data.db.SegmentEntity
+import com.example.util.SubtitleParser
+import com.example.util.WavHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+
+class DubberRepository(
+    private val context: Context,
+    private val database: AppDatabase,
+    private val settingsRepository: SettingsRepository,
+    private val geminiClient: GeminiClient,
+    private val transcriptionClient: TranscriptionClient,
+    private val translationClient: TranslationClient,
+    private val edgeTtsClient: EdgeTtsClient
+) {
+    private val projectDao = database.projectDao()
+    private val segmentDao = database.segmentDao()
+
+    val allProjects: Flow<List<ProjectWithStats>> = projectDao.observeAllProjectsWithStats()
+
+    fun observeProject(id: Long): Flow<ProjectEntity?> = projectDao.observeProjectById(id)
+
+    fun observeSegments(projectId: Long): Flow<List<SegmentEntity>> =
+        segmentDao.observeSegmentsForProject(projectId)
+
+    suspend fun getProject(id: Long): ProjectEntity? = projectDao.getProjectById(id)
+
+    suspend fun getSegments(projectId: Long): List<SegmentEntity> =
+        segmentDao.getSegmentsForProject(projectId)
+
+    suspend fun createProject(
+        name: String,
+        videoUri: Uri?,
+        subtitleContent: String?
+    ): Long = withContext(Dispatchers.IO) {
+        val projectsDir = File(context.filesDir, "projects").apply { mkdirs() }
+        val projectIdTimestamp = System.currentTimeMillis()
+
+        var videoPath = ""
+        var duration = 0.0
+
+        if (videoUri != null) {
+            val extension = getFileExtension(videoUri) ?: "mp4"
+            val destFile = File(projectsDir, "video_${projectIdTimestamp}.$extension")
+            context.contentResolver.openInputStream(videoUri)?.use { input ->
+                FileOutputStream(destFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            videoPath = destFile.absolutePath
+
+            try {
+                val retriever = android.media.MediaMetadataRetriever()
+                retriever.setDataSource(destFile.absolutePath)
+                val durStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                if (durStr != null) {
+                    duration = durStr.toDouble() / 1000.0
+                }
+                retriever.release()
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+
+        val project = ProjectEntity(
+            name = name.ifBlank { "Untitled Project" },
+            videoPath = videoPath,
+            videoMime = "video/mp4",
+            duration = duration,
+            createdAt = projectIdTimestamp
+        )
+
+        val insertedId = projectDao.insertProject(project)
+
+        if (!subtitleContent.isNullOrBlank()) {
+            val cues = SubtitleParser.parseSubtitles(subtitleContent)
+            val segments = cues.mapIndexed { index, cue ->
+                SegmentEntity(
+                    projectId = insertedId,
+                    idx = index + 1,
+                    start = cue.start,
+                    end = cue.end,
+                    text = cue.text,
+                    translation = null,
+                    gender = "female"
+                )
+            }
+            if (segments.isNotEmpty()) {
+                segmentDao.insertSegments(segments)
+            }
+        }
+
+        insertedId
+    }
+
+    suspend fun updateProjectDuration(projectId: Long, duration: Double) = withContext(Dispatchers.IO) {
+        val project = projectDao.getProjectById(projectId) ?: return@withContext
+        if (project.duration <= 0.0 && duration > 0.0) {
+            projectDao.updateProject(project.copy(duration = duration))
+        }
+    }
+
+    suspend fun deleteProject(projectId: Long) = withContext(Dispatchers.IO) {
+        val project = projectDao.getProjectById(projectId)
+        if (project != null) {
+            if (project.videoPath.isNotEmpty()) {
+                val vFile = File(project.videoPath)
+                if (vFile.exists()) vFile.delete()
+            }
+            val segments = segmentDao.getSegmentsForProject(projectId)
+            for (seg in segments) {
+                seg.audioPath?.let { path ->
+                    val aFile = File(path)
+                    if (aFile.exists()) aFile.delete()
+                }
+            }
+            projectDao.deleteProjectById(projectId)
+        }
+    }
+
+    suspend fun updateSegment(segment: SegmentEntity) = withContext(Dispatchers.IO) {
+        val existing = segmentDao.getSegmentById(segment.id)
+        val invalidateAudio = existing != null && (
+                existing.translation != segment.translation ||
+                        existing.text != segment.text ||
+                        existing.gender != segment.gender
+                )
+
+        val updatedSegment = if (invalidateAudio && existing?.audioPath != null) {
+            val aFile = File(existing.audioPath)
+            if (aFile.exists()) aFile.delete()
+            segment.copy(audioPath = null, audioDuration = null)
+        } else {
+            segment
+        }
+        segmentDao.updateSegment(updatedSegment)
+    }
+
+    suspend fun deleteSegment(segmentId: Long) = withContext(Dispatchers.IO) {
+        val existing = segmentDao.getSegmentById(segmentId)
+        if (existing?.audioPath != null) {
+            val aFile = File(existing.audioPath)
+            if (aFile.exists()) aFile.delete()
+        }
+        segmentDao.deleteSegmentById(segmentId)
+    }
+
+    suspend fun updateSegmentSpeed(segmentId: Long, speed: Float?) = withContext(Dispatchers.IO) {
+        val seg = segmentDao.getSegmentById(segmentId) ?: return@withContext
+        segmentDao.updateSegment(seg.copy(customSpeed = speed))
+    }
+
+    suspend fun replaceSubtitles(projectId: Long, content: String): Int = withContext(Dispatchers.IO) {
+        val cues = SubtitleParser.parseSubtitles(content)
+        if (cues.isEmpty()) return@withContext 0
+
+        val oldSegments = segmentDao.getSegmentsForProject(projectId)
+        for (s in oldSegments) {
+            s.audioPath?.let { File(it).delete() }
+        }
+        segmentDao.deleteSegmentsByProjectId(projectId)
+
+        val newSegments = cues.mapIndexed { index, cue ->
+            SegmentEntity(
+                projectId = projectId,
+                idx = index + 1,
+                start = cue.start,
+                end = cue.end,
+                text = cue.text,
+                gender = "female"
+            )
+        }
+        segmentDao.insertSegments(newSegments)
+        newSegments.size
+    }
+
+    suspend fun transcribeVideoWithAI(projectId: Long): Int = withContext(Dispatchers.IO) {
+        val project = projectDao.getProjectById(projectId)
+            ?: throw IllegalStateException("Project not found")
+
+        if (project.videoPath.isBlank()) {
+            throw IllegalStateException("No video file associated with this project")
+        }
+
+        val videoFile = File(project.videoPath)
+        if (!videoFile.exists()) {
+            throw IllegalStateException("Video file does not exist on disk")
+        }
+
+        val engine = settingsRepository.settings.value.transcriptionEngine
+        val items = transcriptionClient.transcribe(videoFile, project.videoMime, engine)
+        if (items.isEmpty()) {
+            throw IllegalStateException("No speech dialogue could be detected in video")
+        }
+
+        val oldSegments = segmentDao.getSegmentsForProject(projectId)
+        for (s in oldSegments) {
+            s.audioPath?.let { File(it).delete() }
+        }
+        segmentDao.deleteSegmentsByProjectId(projectId)
+
+        val newSegments = items.mapIndexed { index, item ->
+            SegmentEntity(
+                projectId = projectId,
+                idx = index + 1,
+                start = item.start,
+                end = item.end,
+                text = item.text,
+                gender = item.gender
+            )
+        }
+        segmentDao.insertSegments(newSegments)
+        newSegments.size
+    }
+
+    suspend fun translateBatch(
+        projectId: Long,
+        segmentIds: List<Long>,
+        onProgress: (done: Int, total: Int) -> Unit
+    ): Int = withContext(Dispatchers.IO) {
+        val settings = settingsRepository.settings.value
+        val allProjectSegments = segmentDao.getSegmentsForProject(projectId)
+        val targets = if (segmentIds.isNotEmpty()) {
+            allProjectSegments.filter { it.id in segmentIds }
+        } else {
+            allProjectSegments.filter { it.translation.isNullOrBlank() }
+        }
+
+        if (targets.isEmpty()) return@withContext 0
+
+        val total = targets.size
+        var updatedCount = 0
+        val batchSize = 20
+
+        for (i in targets.indices step batchSize) {
+            val chunk = targets.subList(i, minOf(i + batchSize, targets.size))
+            val itemsToTranslate = chunk.map {
+                Triple(it.id, (it.end - it.start).coerceAtLeast(0.5), it.text)
+            }
+
+            val results = translationClient.translate(
+                segments = itemsToTranslate,
+                targetLanguage = settings.language,
+                style = settings.style,
+                engine = settings.translationEngine
+            )
+
+            for (res in results) {
+                val seg = chunk.find { it.id == res.id }
+                if (seg != null && res.translation.isNotBlank()) {
+                    segmentDao.updateSegment(seg.copy(translation = res.translation))
+                    updatedCount++
+                }
+            }
+
+            onProgress(minOf(i + chunk.size, total), total)
+        }
+
+        updatedCount
+    }
+
+    suspend fun generateVoiceForSegment(segmentId: Long): SegmentEntity = withContext(Dispatchers.IO) {
+        val seg = segmentDao.getSegmentById(segmentId)
+            ?: throw IllegalStateException("Segment not found")
+
+        val settings = settingsRepository.settings.value
+        val voiceName = if (seg.gender.equals("male", ignoreCase = true)) {
+            settings.maleVoice
+        } else {
+            settings.femaleVoice
+        }
+
+        val textToSpeak = (seg.translation?.takeIf { it.isNotBlank() } ?: seg.text).trim()
+        if (textToSpeak.isEmpty()) {
+            throw IllegalStateException("Segment text is empty")
+        }
+
+        val audioDir = File(context.filesDir, "audio_dubs").apply { mkdirs() }
+        val audioFile = File(audioDir, "a_${seg.id}_${System.currentTimeMillis()}.mp3")
+
+        // Auto-detect reading speed:
+        // - Text between 50 to 60+ chars: speed increases to 1.4, 1.5, or above
+        // - Short text: 1.0, 1.1, or 1.2
+        val autoSpeed = SettingsRepository.calculateAutoSpeed(textToSpeak, seg.end - seg.start)
+        val effectiveSpeed = seg.customSpeed ?: autoSpeed
+
+        var durationSec: Double
+        try {
+            // Direct to user Edge TTS server: https://takumi0002-tts-kh.hf.space
+            durationSec = edgeTtsClient.generateSpeech(
+                text = textToSpeak,
+                voice = voiceName,
+                speed = effectiveSpeed,
+                destFile = audioFile
+            )
+        } catch (e: Exception) {
+            // Fallback to Gemini TTS if custom Edge server is temporarily unreachable
+            val pcmBytes = geminiClient.generateSpeech(
+                text = textToSpeak,
+                voiceName = if (seg.gender.equals("male", ignoreCase = true)) "Charon" else "Kore",
+                stylePrompt = "Say expressively"
+            )
+            val wavFile = File(audioDir, "a_${seg.id}_${System.currentTimeMillis()}.wav")
+            durationSec = WavHelper.saveWavFile(wavFile, pcmBytes)
+            audioFile.delete()
+            wavFile.renameTo(audioFile)
+        }
+
+        seg.audioPath?.let { oldPath ->
+            val oldFile = File(oldPath)
+            if (oldFile.exists()) oldFile.delete()
+        }
+
+        val updated = seg.copy(
+            audioPath = audioFile.absolutePath,
+            audioDuration = durationSec
+        )
+        segmentDao.updateSegment(updated)
+        updated
+    }
+
+    private fun getFileExtension(uri: Uri): String? {
+        val extension = android.webkit.MimeTypeMap.getFileExtensionFromUrl(uri.toString())
+        if (!extension.isNullOrBlank()) return extension
+        return try {
+            val mime = context.contentResolver.getType(uri)
+            android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+        } catch (e: Exception) {
+            "mp4"
+        }
+    }
+}

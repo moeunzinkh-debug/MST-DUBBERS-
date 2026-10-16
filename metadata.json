@@ -1,0 +1,8 @@
+{
+  "name": "Remix MST DUBBERS FREE",
+  "description": "AI video dubbing, subtitle translation, and multi-speaker voice synthesis studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
