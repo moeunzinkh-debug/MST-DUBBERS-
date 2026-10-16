@@ -1,11 +1,9 @@
 package com.example
 
-import com.example.data.api.EdgeTtsClient
 import com.example.data.api.SpeakableText
 import com.example.data.api.TtsException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -50,15 +48,5 @@ class SpeakableTextTest {
     assertFalse(TtsException.from(IllegalStateException("Gemini API key is required")).isRetryable)
     val original = TtsException("x", TtsException.Kind.NOTHING_TO_SPEAK)
     assertSame(original, TtsException.from(original))
-  }
-
-  @Test
-  fun `server error details are read from FastAPI answers`() {
-    assertEquals("No audio generated", EdgeTtsClient.errorDetail("""{"detail":"No audio generated"}""".toByteArray()))
-    assertEquals("Not Found", EdgeTtsClient.errorDetail("Not Found\n".toByteArray()))
-    assertEquals("", EdgeTtsClient.errorDetail(ByteArray(0)))
-    assertEquals(7L, EdgeTtsClient.retryAfterSec(" 7 "))
-    assertNull(EdgeTtsClient.retryAfterSec("Wed, 21 Oct 2026 07:28:00 GMT"))
-    assertNull(EdgeTtsClient.retryAfterSec(null))
   }
 }

@@ -11,5 +11,4 @@ adb shell settings put global hide_error_dialogs 1 || true
 status=0
 gradle connectedDebugAndroidTest --stacktrace 2>&1 | tee instrumented-tests.log || status=$?
 adb logcat -d -v time '*:W' > logcat-warnings.txt 2>/dev/null || true
-adb logcat -d -v raw -s MSTSHOT:I > screenshots.txt 2>/dev/null || true
 exit "$status"

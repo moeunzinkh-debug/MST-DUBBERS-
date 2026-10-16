@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -143,5 +144,16 @@ class EdgeTtsClientTest {
     serverRunning = false
     val error = failure()
     assertEquals(TtsException.Kind.TEMPORARY, error.kind)
+  }
+
+  // Robolectric: org.json is only a stub in plain JVM unit tests.
+  @Test
+  fun `server error details are read from FastAPI answers`() {
+    assertEquals("No audio generated", EdgeTtsClient.errorDetail("""{"detail":"No audio generated"}""".toByteArray()))
+    assertEquals("Not Found", EdgeTtsClient.errorDetail("Not Found\n".toByteArray()))
+    assertEquals("", EdgeTtsClient.errorDetail(ByteArray(0)))
+    assertEquals(7L, EdgeTtsClient.retryAfterSec(" 7 "))
+    assertNull(EdgeTtsClient.retryAfterSec("Wed, 21 Oct 2026 07:28:00 GMT"))
+    assertNull(EdgeTtsClient.retryAfterSec(null))
   }
 }

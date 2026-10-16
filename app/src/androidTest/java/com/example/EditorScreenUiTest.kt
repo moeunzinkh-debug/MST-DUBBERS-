@@ -3,8 +3,6 @@ package com.example
 import android.app.Application
 import android.graphics.Bitmap
 import android.os.Build
-import android.util.Base64
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.ui.geometry.Offset
@@ -42,7 +40,6 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -122,7 +119,6 @@ class EditorScreenUiTest {
     // Paused right after opening, the picture must already show the video (not stay black).
     val contrast = pictureContrast()
     assertTrue("video frame visible while paused (luma std dev $contrast)", contrast > 40.0)
-    logScreenshot("editor_paused")
 
     // Tap a line while playing: the video must jump there and keep playing.
     composeRule.onNodeWithTag("player_play_pause_button").performClick()
@@ -133,7 +129,6 @@ class EditorScreenUiTest {
     composeRule.waitForIdle()
     val afterSeek = viewModel.currentTime.value
     assertTrue("position reported by the player after tapping line 3: $afterSeek", afterSeek >= 2.6 && afterSeek < 3.9)
-    logScreenshot("editor_playing")
     composeRule.onNodeWithTag("player_play_pause_button").performClick()
     composeRule.waitUntil(3_000) { !viewModel.isPlaying.value }
 
@@ -170,8 +165,6 @@ class EditorScreenUiTest {
 
     // The new box is saved for the project.
     assertEquals(resized, SettingsRepository(app).loadBlurSettings(projectId).region)
-    Thread.sleep(500)
-    logScreenshot("editor_blur_moved")
 
     // Holding the blur icon opens the strength panel below the player.
     composeRule.onNodeWithTag("editor_blur_button").performTouchInput { longClick() }
@@ -193,7 +186,6 @@ class EditorScreenUiTest {
     assertTrue("strong blur is smoother than weak (luma std dev $strongContrast vs $weakContrast)",
       weakContrast > 20.0 && strongContrast < weakContrast * 0.5)
     assertEquals(BlurStrength.STRONG, SettingsRepository(app).loadBlurSettings(projectId).strength, 0.001f)
-    logScreenshot("editor_blur_strength", left = 0.2f, top = 0.04f, bottom = 0.72f, width = 280, quality = 45)
 
     // The slider sets any strength in between.
     composeRule.onNodeWithTag("blur_strength_slider").performSemanticsAction(SemanticsActions.SetProgress) { it(0.3f) }
@@ -268,30 +260,5 @@ class EditorScreenUiTest {
     } else {
       captured
     }
-  }
-
-  /** Logs a small JPEG of the screen as base64, so CI can show it without downloading artifacts. */
-  private fun logScreenshot(
-    name: String,
-    left: Float = 0f,
-    top: Float = 0f,
-    right: Float = 1f,
-    bottom: Float = 1f,
-    width: Int = 300,
-    quality: Int = 50
-  ) {
-    val screen = screenshot() ?: return
-    val x0 = (screen.width * left).toInt()
-    val y0 = (screen.height * top).toInt()
-    val part = Bitmap.createBitmap(
-      screen, x0, y0,
-      (screen.width * right).toInt() - x0,
-      (screen.height * bottom).toInt() - y0
-    )
-    val height = (part.height * width.toFloat() / part.width).toInt()
-    val small = Bitmap.createScaledBitmap(part, width, height, true)
-    val bytes = ByteArrayOutputStream().also { small.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
-    val chunks = Base64.encodeToString(bytes, Base64.NO_WRAP).chunked(3000)
-    chunks.forEachIndexed { index, chunk -> Log.i("MSTSHOT", "$name ${index + 1}/${chunks.size} $chunk") }
   }
 }
