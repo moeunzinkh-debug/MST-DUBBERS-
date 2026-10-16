@@ -158,6 +158,10 @@ jobs:
         if: failure()
         run: python3 .github/scripts/report_failures.py gradle-output.log
 
+      - name: Test summary
+        if: always() && matrix.variant == 'test'
+        run: python3 .github/scripts/test_summary.py
+
       - name: Collect and verify APK
         id: apk
         if: matrix.variant != 'test'
@@ -275,3 +279,11 @@ jobs:
       - name: Report errors
         if: failure()
         run: python3 .github/scripts/report_failures.py instrumented-tests.log logcat-warnings.txt
+
+      - name: Test summary
+        if: always()
+        run: python3 .github/scripts/test_summary.py
+
+      - name: Publish UI screenshots
+        if: always()
+        run: python3 .github/scripts/publish_screenshots.py screenshots.txt
