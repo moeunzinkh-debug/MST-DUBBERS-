@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.graphics.SurfaceTexture
 import android.net.Uri
 import android.os.SystemClock
 import android.view.TextureView
@@ -38,7 +39,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -119,10 +119,10 @@ fun VideoPlayerView(
     val latestOnTimeUpdate by rememberUpdatedState(onTimeUpdate)
     val latestTimeSec by rememberUpdatedState(currentTimeSec)
     val latestDurationSec by rememberUpdatedState(durationSec)
+    val latestBlurEnabled by rememberUpdatedState(blurEnabled)
 
     var videoAspect by remember(videoPath) { mutableFloatStateOf(16f / 9f) }
     var playbackError by remember(videoPath) { mutableStateOf<String?>(null) }
-    var renderedFrames by remember(videoPath) { mutableIntStateOf(0) }
     val snapshot = remember(videoPath) { FrameSnapshot() }
 
     // One ExoPlayer per video file, starting where the editor currently is.
@@ -189,7 +189,6 @@ fun VideoPlayerView(
 
             override fun onRenderedFirstFrame() {
                 frameShown = true
-                renderedFrames++
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -199,7 +198,37 @@ fun VideoPlayerView(
         }
         p.addListener(listener)
         p.setVideoTextureView(textureView)
+
+        // Wrap ExoPlayer's surface listener to learn when a new frame reaches the view, and
+        // refresh the blur preview right then (at most every BLUR_SNAPSHOT_INTERVAL_MS while
+        // playing, immediately when paused).
+        val exoSurfaceListener = textureView.surfaceTextureListener
+        var lastSnapshotAt = 0L
+        textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                exoSurfaceListener?.onSurfaceTextureAvailable(surface, width, height)
+            }
+
+            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+                exoSurfaceListener?.onSurfaceTextureSizeChanged(surface, width, height)
+            }
+
+            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean =
+                exoSurfaceListener?.onSurfaceTextureDestroyed(surface) ?: true
+
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+                exoSurfaceListener?.onSurfaceTextureUpdated(surface)
+                if (!latestBlurEnabled) return
+                val now = SystemClock.uptimeMillis()
+                if (!p.isPlaying || now - lastSnapshotAt >= BLUR_SNAPSHOT_INTERVAL_MS) {
+                    lastSnapshotAt = now
+                    snapshot.capture(textureView)
+                }
+            }
+        }
+
         onDispose {
+            textureView.surfaceTextureListener = exoSurfaceListener
             p.removeListener(listener)
             p.clearVideoTextureView(textureView)
             p.release()
@@ -270,15 +299,9 @@ fun VideoPlayerView(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Keep the blur preview's frame copy fresh.
-    LaunchedEffect(player, blurEnabled, isPlaying, renderedFrames, videoAspect) {
-        if (player == null || !blurEnabled) return@LaunchedEffect
-        delay(40)
-        snapshot.capture(textureView)
-        while (isPlaying) {
-            delay(BLUR_SNAPSHOT_INTERVAL_MS)
-            snapshot.capture(textureView)
-        }
+    // Turning the blur box on while paused: copy the frame that is already on screen.
+    LaunchedEffect(player, blurEnabled) {
+        if (player != null && blurEnabled) snapshot.capture(textureView)
     }
 
     Column(
