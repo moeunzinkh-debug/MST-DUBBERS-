@@ -143,10 +143,38 @@ fun VideoPlayerView(
     DisposableEffect(player) {
         val p = player ?: return@DisposableEffect onDispose { }
         val listener = object : Player.Listener {
+            // When the picture surface appears after the first frame was decoded (on open, or
+            // when coming back to the app), ExoPlayer only paints it once playback starts. A
+            // tiny seek paints the current frame while paused.
+            private var surfaceReady = false
+            private var frameShown = false
+            private var nudged = false
+
+            private fun showFrameIfPaused() {
+                if (surfaceReady && !frameShown && !nudged && !p.playWhenReady &&
+                    p.playbackState == Player.STATE_READY
+                ) {
+                    nudged = true
+                    val position = p.currentPosition
+                    p.seekTo(if (position > 0) position - 1 else position + 1)
+                }
+            }
+
+            override fun onSurfaceSizeChanged(width: Int, height: Int) {
+                val ready = width > 0 && height > 0
+                if (ready != surfaceReady) {
+                    surfaceReady = ready
+                    frameShown = false
+                    nudged = false
+                }
+                showFrameIfPaused()
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY && p.duration > 0) {
                     latestOnDurationKnown(p.duration / 1000.0)
                 }
+                if (playbackState == Player.STATE_READY) showFrameIfPaused()
                 if (playbackState == Player.STATE_ENDED) {
                     latestOnPlayPause(false)
                     if (p.duration > 0) latestOnTimeUpdate(p.duration / 1000.0)
@@ -160,6 +188,7 @@ fun VideoPlayerView(
             }
 
             override fun onRenderedFirstFrame() {
+                frameShown = true
                 renderedFrames++
             }
 
@@ -334,7 +363,8 @@ fun VideoPlayerView(
                 )
             }
 
-            if (!isPlaying && !isTranscribing) {
+            // Hidden while the blur box is on, so it never covers the box.
+            if (!isPlaying && !isTranscribing && !blurEnabled) {
                 Box(
                     modifier = Modifier
                         .size(52.dp)
@@ -425,6 +455,7 @@ private fun PlayerControls(
                 text = SubtitleParser.formatTimeDisplay(currentTimeSec),
                 color = Color.White,
                 fontSize = 12.sp,
+                lineHeight = 15.sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(start = 6.dp)
             )
@@ -436,6 +467,7 @@ private fun PlayerControls(
                     text = "Video 10%",
                     color = Color(0xFF10B981),
                     fontSize = 10.sp,
+                    lineHeight = 13.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
                         .clip(RoundedCornerShape(5.dp))
@@ -465,6 +497,7 @@ private fun PlayerControls(
                 text = SubtitleParser.formatTimeDisplay(durationSec),
                 color = Color.White.copy(alpha = 0.6f),
                 fontSize = 12.sp,
+                lineHeight = 15.sp,
                 modifier = Modifier.padding(start = 6.dp)
             )
         }

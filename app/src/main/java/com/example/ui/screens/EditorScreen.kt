@@ -16,12 +16,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -210,6 +214,7 @@ fun EditorScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(DarkBg2)
+                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -350,14 +355,15 @@ fun EditorScreen(
                     .fillMaxWidth()
                     .background(DarkBg2)
                     .border(width = 1.dp, color = DarkLine)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 // Button 1: Translate with AI
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(68.dp)
+                        .height(60.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(SkyAccent)
                         .clickable(enabled = translatingProgress == null && segments.isNotEmpty()) {
@@ -373,7 +379,7 @@ fun EditorScreen(
                         if (translatingProgress != null) {
                             CircularProgressIndicator(
                                 color = Color.Black,
-                                modifier = Modifier.size(22.dp),
+                                modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.5.dp
                             )
                         } else {
@@ -381,7 +387,7 @@ fun EditorScreen(
                                 imageVector = Icons.Default.Translate,
                                 contentDescription = "Translate",
                                 tint = Color.Black,
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                         Text(
@@ -389,12 +395,14 @@ fun EditorScreen(
                             color = Color.Black,
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 13.sp,
-                            modifier = Modifier.padding(top = 2.dp)
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(top = 1.dp)
                         )
                         Text(
                             text = translatingProgress?.let { "${it.done}/${it.total}" } ?: "$translatedCount/${segments.size}",
                             color = Color.Black.copy(alpha = 0.75f),
                             fontSize = 11.sp,
+                            lineHeight = 13.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -404,7 +412,7 @@ fun EditorScreen(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(68.dp)
+                        .height(60.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(VoiceButtonBg)
                         .clickable(enabled = voicingProgress == null && segments.isNotEmpty()) {
@@ -420,7 +428,7 @@ fun EditorScreen(
                         if (voicingProgress != null) {
                             CircularProgressIndicator(
                                 color = VoiceButtonFg,
-                                modifier = Modifier.size(22.dp),
+                                modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.5.dp
                             )
                         } else {
@@ -428,7 +436,7 @@ fun EditorScreen(
                                 imageVector = Icons.Default.GraphicEq,
                                 contentDescription = "Voice AI",
                                 tint = VoiceButtonFg,
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                         Text(
@@ -436,13 +444,15 @@ fun EditorScreen(
                             color = VoiceButtonFg,
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 13.sp,
-                            modifier = Modifier.padding(top = 2.dp)
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(top = 1.dp)
                         )
                         Text(
                             text = voicingProgress?.let { "${it.done}/${it.total}" }
                                 ?: if (selectedIds.isNotEmpty()) "${selectedIds.size} selected" else "$voicedCount/${segments.size}",
                             color = VoiceButtonFg.copy(alpha = 0.75f),
                             fontSize = 11.sp,
+                            lineHeight = 13.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -452,7 +462,7 @@ fun EditorScreen(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(68.dp)
+                        .height(60.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(DarkCard2)
                         .clickable { showExportSheet = true }
@@ -467,19 +477,21 @@ fun EditorScreen(
                             imageVector = Icons.Default.Download,
                             contentDescription = "Export",
                             tint = DarkMuted,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                         Text(
                             text = "Export",
                             color = DarkFg,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp,
-                            modifier = Modifier.padding(top = 2.dp)
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(top = 1.dp)
                         )
                         Text(
                             text = "Dub & Subs",
                             color = DarkMuted,
-                            fontSize = 11.sp
+                            fontSize = 11.sp,
+                            lineHeight = 13.sp
                         )
                     }
                 }
@@ -542,19 +554,19 @@ fun EditorScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(imageVector = Icons.Default.ClosedCaption, contentDescription = "Subs", tint = DarkMuted, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(3.dp))
-                    Text("${segments.size}", color = DarkFg, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("${segments.size}", color = DarkFg, fontWeight = FontWeight.Bold, fontSize = 13.sp, lineHeight = 16.sp)
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(imageVector = Icons.Default.Translate, contentDescription = "Tr", tint = SkyAccent, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(3.dp))
-                    Text("$translatedCount", color = SkyAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("$translatedCount", color = SkyAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp, lineHeight = 16.sp)
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(imageVector = Icons.Default.GraphicEq, contentDescription = "Voiced", tint = EmeraldAccent, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(3.dp))
-                    Text("$voicedCount", color = EmeraldAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("$voicedCount", color = EmeraldAccent, fontWeight = FontWeight.Bold, fontSize = 13.sp, lineHeight = 16.sp)
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
@@ -574,6 +586,7 @@ fun EditorScreen(
                         text = "Auto-Fit ${fitMode?.label ?: "Off"}",
                         color = DarkMuted,
                         fontSize = 11.sp,
+                        lineHeight = 14.sp,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -672,7 +685,9 @@ fun EditorScreen(
             visible = toastMessage != null,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier
+                .padding(innerPadding)
+                .padding(16.dp)
         ) {
             toastMessage?.let { (msg, isErr) ->
                 Box(
@@ -911,6 +926,7 @@ private fun SegmentRowItem(
                     color = if (isActive) DarkFg else DarkMuted,
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp,
+                    lineHeight = 14.sp,
                     modifier = Modifier
                         .clip(RoundedCornerShape(5.dp))
                         .background(if (isActive) DarkAccent.copy(alpha = 0.35f) else DarkCard2)
@@ -939,6 +955,7 @@ private fun SegmentRowItem(
                         text = if (isMale) "Male" else "Female",
                         color = if (isMale) SkyAccent else FuchsiaAccent,
                         fontSize = 10.sp,
+                        lineHeight = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -949,6 +966,7 @@ private fun SegmentRowItem(
                     text = "${SubtitleParser.formatTimeDisplay(segment.start)} → ${SubtitleParser.formatTimeDisplay(segment.end)}",
                     color = DarkMuted,
                     fontSize = 11.sp,
+                    lineHeight = 14.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -990,6 +1008,7 @@ private fun SegmentRowItem(
                         text = "%.1fx".format(effectiveSpeed) + (if (isCustomSpeed) "★" else ""),
                         color = if (speedHighlighted) Color(0xFFF59E0B) else DarkMuted,
                         fontSize = 10.sp,
+                        lineHeight = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }

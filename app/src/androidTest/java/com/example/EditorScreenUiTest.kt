@@ -6,6 +6,7 @@ import android.os.Build
 import android.util.Base64
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasTestTag
@@ -96,6 +97,8 @@ class EditorScreenUiTest {
   @Test
   fun editorControlsSeekSubtitlesAndBlurBox() {
     val viewModel = DubberViewModel(app)
+    // Like MainActivity: draw behind the system bars.
+    composeRule.runOnUiThread { composeRule.activity.enableEdgeToEdge() }
     composeRule.setContent {
       MyApplicationTheme(darkTheme = true) {
         EditorScreen(projectId = projectId, viewModel = viewModel, onNavigateBack = {})
@@ -108,6 +111,9 @@ class EditorScreenUiTest {
     composeRule.waitForIdle()
     composeRule.onNodeWithTag("blur_box", useUnmergedTree = true).assertExists()
     composeRule.onNodeWithTag("player_subtitles_button").assertExists()
+    // Paused right after opening, the picture must already show the video (not stay black).
+    val contrast = pictureContrast()
+    assertTrue("video frame visible while paused (luma std dev $contrast)", contrast > 40.0)
     logScreenshot("editor_paused")
 
     // Tap a line while playing: the video must jump there and keep playing.
@@ -166,14 +172,42 @@ class EditorScreenUiTest {
     composeRule.onNodeWithTag(tag).performTouchInput { click(percentOffset(0.6f, 0.9f)) }
   }
 
-  /** Logs a small JPEG of the screen as base64, so CI can show it without downloading artifacts. */
-  private fun logScreenshot(name: String) {
-    val captured = instrumentation.uiAutomation.takeScreenshot() ?: return
-    val screen = if (Build.VERSION.SDK_INT >= 26 && captured.config == Bitmap.Config.HARDWARE) {
+  /** Luma standard deviation in the upper middle of the picture (away from the blur box). */
+  private fun pictureContrast(): Double {
+    val bounds = composeRule.onNodeWithTag("video_picture_area").fetchSemanticsNode().boundsInRoot
+    val screen = screenshot() ?: return 0.0
+    val x0 = (bounds.left + bounds.width * 0.45f).toInt().coerceIn(0, screen.width - 1)
+    val x1 = (bounds.left + bounds.width * 0.55f).toInt().coerceIn(x0 + 1, screen.width)
+    val y0 = (bounds.top + bounds.height * 0.10f).toInt().coerceIn(0, screen.height - 1)
+    val y1 = (bounds.top + bounds.height * 0.40f).toInt().coerceIn(y0 + 1, screen.height)
+    var sum = 0.0
+    var sumSq = 0.0
+    var n = 0
+    for (y in y0 until y1) {
+      for (x in x0 until x1) {
+        val c = screen.getPixel(x, y)
+        val luma = 0.299 * ((c shr 16) and 0xFF) + 0.587 * ((c shr 8) and 0xFF) + 0.114 * (c and 0xFF)
+        sum += luma
+        sumSq += luma * luma
+        n++
+      }
+    }
+    val mean = sum / n
+    return kotlin.math.sqrt((sumSq / n - mean * mean).coerceAtLeast(0.0))
+  }
+
+  private fun screenshot(): Bitmap? {
+    val captured = instrumentation.uiAutomation.takeScreenshot() ?: return null
+    return if (Build.VERSION.SDK_INT >= 26 && captured.config == Bitmap.Config.HARDWARE) {
       captured.copy(Bitmap.Config.ARGB_8888, false)
     } else {
       captured
     }
+  }
+
+  /** Logs a small JPEG of the screen as base64, so CI can show it without downloading artifacts. */
+  private fun logScreenshot(name: String) {
+    val screen = screenshot() ?: return
     val width = 300
     val height = (screen.height * width.toFloat() / screen.width).toInt()
     val small = Bitmap.createScaledBitmap(screen, width, height, true)
