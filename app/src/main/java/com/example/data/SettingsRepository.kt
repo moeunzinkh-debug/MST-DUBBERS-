@@ -42,6 +42,9 @@ class SettingsRepository(private val context: Context) {
         context.getSharedPreferences("mst_dubbers_prefs", Context.MODE_PRIVATE)
 
     companion object {
+        /** Placeholder from `.env.example`, compiled in when a build has no `.env` (e.g. CI). Not a real key. */
+        private const val PLACEHOLDER_API_KEY = "MY_GEMINI_API_KEY"
+
         const val ABOUT_TEXT = "នេះជាកម្មវិធី បកប្រែវីដេអូពីភាសាផ្សេងទៅជាភាសាខ្មែរ ឬភាសាផ្សេងទៀត ដោយផ្ទាល់នៅក្នុងកម្មវិធីរបស់យើង អ្នកទាំងអស់គ្នាអាចប្រើប្រាស់ដោយឥតគិតថ្លៃ ដោយត្រឹមតែអ្នកទាំងអស់គ្នាមាន Key API."
 
         val FIT_MODES = listOf(
@@ -116,7 +119,10 @@ class SettingsRepository(private val context: Context) {
             ""
         }
         val storedKey = prefs.getString("api_key", "") ?: ""
-        val effectiveKey = if (storedKey.isNotBlank()) storedKey else buildKey
+        // Treat the .env.example placeholder as "no key" so the user is asked to enter their own.
+        val effectiveKey = (if (storedKey.isNotBlank()) storedKey else buildKey)
+            .takeUnless { it.trim() == PLACEHOLDER_API_KEY }
+            .orEmpty()
 
         return AppSettings(
             apiKey = effectiveKey,

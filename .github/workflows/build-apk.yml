@@ -21,8 +21,9 @@
 #                            passwords "android"). Without it a new debug key is
 #                            generated on every run.
 #
-# No Gemini API key is baked into these builds: users enter their own key in the
-# app's Settings screen.
+# No real Gemini API key is baked into these builds. CI has no .env file, so only
+# the "MY_GEMINI_API_KEY" placeholder from .env.example is compiled in, and the app
+# ignores it. Users enter their own key in the app's Settings screen.
 
 name: Build APK
 
@@ -95,11 +96,6 @@ jobs:
         with:
           gradle-version: ${{ steps.gradle-version.outputs.version }}
           cache-provider: basic
-
-      # Without a .env file the Secrets Gradle Plugin falls back to the placeholder
-      # in .env.example ("MY_GEMINI_API_KEY") and bakes it into the APK.
-      - name: Create .env (no API key in the APK)
-        run: echo "GEMINI_API_KEY=" > .env
 
       - name: Prepare debug signing key
         if: matrix.variant != 'release'
