@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.SettingsRepository
 import com.example.media.BlurRegion
 import com.example.media.BlurSettings
+import com.example.media.BlurStrength
 import com.example.media.DubClip
 import com.example.media.DubTrackRenderer
 import com.example.media.PcmAudio
@@ -129,13 +130,18 @@ class DubTrackRendererTest {
     val repository = SettingsRepository(context)
     assertEquals(BlurSettings(), repository.loadBlurSettings(7))
 
-    val custom = BlurSettings(enabled = true, region = BlurRegion(0.1f, 0.2f, 0.5f, 0.4f))
+    val custom = BlurSettings(enabled = true, region = BlurRegion(0.1f, 0.2f, 0.5f, 0.4f), strength = BlurStrength.STRONG)
     repository.saveBlurSettings(7, custom)
     assertEquals(custom, SettingsRepository(context).loadBlurSettings(7))
     assertEquals(BlurSettings(), repository.loadBlurSettings(8))
 
+    // Out-of-range strengths are stored clamped.
+    repository.saveBlurSettings(9, BlurSettings(strength = 7f))
+    assertEquals(1f, repository.loadBlurSettings(9).strength, 0f)
+
     repository.clearBlurSettings(7)
     assertFalse(repository.loadBlurSettings(7).enabled)
+    assertEquals(BlurStrength.DEFAULT, repository.loadBlurSettings(7).strength, 0f)
   }
 
   private fun intLe(value: Int): ByteArray = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value).array()

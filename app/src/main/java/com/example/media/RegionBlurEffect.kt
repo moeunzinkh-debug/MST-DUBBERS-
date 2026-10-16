@@ -12,6 +12,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BaseGlShaderProgram
 import androidx.media3.effect.GlEffect
 import androidx.media3.effect.GlShaderProgram
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
@@ -30,8 +31,18 @@ class RegionBlurEffect private constructor(
         RegionBlurShaderProgram(useHdr, region, horizontal, sigmaFraction)
 
     companion object {
-        /** Blur strength: the Gaussian sigma as a fraction of the frame's shorter side. */
-        const val DEFAULT_SIGMA_FRACTION = 0.025f
+        /** Default blur strength: the Gaussian sigma as a fraction of the frame's shorter side. */
+        val DEFAULT_SIGMA_FRACTION: Float = BlurStrength.sigmaFraction(BlurStrength.DEFAULT)
+
+        /** Most samples on each side of the pixel; must match the loop bound in the shader. */
+        const val MAX_TAPS = 24
+        const val MIN_TAPS = 8
+
+        /** Preferred largest gap between two samples, in pixels (strong blurs need more samples). */
+        const val MAX_STEP_PX = 3f
+
+        /** Samples on each side of the pixel for a blur of [sigmaPx] pixels. */
+        fun tapsFor(sigmaPx: Float): Int = ceil(3f * sigmaPx / MAX_STEP_PX).toInt().coerceIn(MIN_TAPS, MAX_TAPS)
 
         /** Returns the two passes that blur [region] (normalized, top-left origin). */
         fun create(region: BlurRegion, sigmaFraction: Float = DEFAULT_SIGMA_FRACTION): List<Effect> {
@@ -74,13 +85,15 @@ private class RegionBlurShaderProgram(
 
     override fun configure(inputWidth: Int, inputHeight: Int): Size {
         val sigmaPx = max(1.5f, sigmaFraction * min(inputWidth, inputHeight))
-        // TAPS samples on each side of the pixel cover +/- 3 sigma.
-        val stepPx = 3f * sigmaPx / TAPS
+        val taps = RegionBlurEffect.tapsFor(sigmaPx)
+        // The taps on each side of the pixel cover +/- 3 sigma.
+        val stepPx = 3f * sigmaPx / taps
         glProgram.setFloatsUniform(
             "uStep",
             if (horizontal) floatArrayOf(stepPx / inputWidth, 0f) else floatArrayOf(0f, stepPx / inputHeight)
         )
         glProgram.setFloatUniform("uSigmaSteps", sigmaPx / stepPx)
+        glProgram.setFloatUniform("uTaps", taps.toFloat())
         return Size(inputWidth, inputHeight)
     }
 
@@ -106,9 +119,6 @@ private class RegionBlurShaderProgram(
     }
 
     private companion object {
-        /** Samples on each side of the pixel; must match the loop bound in [FRAGMENT_SHADER]. */
-        const val TAPS = 12
-
         const val VERTEX_SHADER = """#version 100
 attribute vec4 aFramePosition;
 varying vec2 vTexSamplingCoord;
@@ -131,6 +141,8 @@ uniform vec4 uRect;
 uniform vec2 uStep;
 // Gaussian sigma, in taps.
 uniform float uSigmaSteps;
+// Samples used on each side of the pixel (at most 24, the loop bound below).
+uniform float uTaps;
 varying vec2 vTexSamplingCoord;
 
 void main() {
@@ -142,8 +154,9 @@ void main() {
   float twoSigmaSq = 2.0 * uSigmaSteps * uSigmaSteps;
   vec4 sum = texture2D(uTexSampler, coord);
   float total = 1.0;
-  for (int i = 1; i <= 12; i++) {
+  for (int i = 1; i <= 24; i++) {
     float fi = float(i);
+    if (fi > uTaps) break;
     float w = exp(-(fi * fi) / twoSigmaSq);
     sum += w * (texture2D(uTexSampler, coord + uStep * fi) + texture2D(uTexSampler, coord - uStep * fi));
     total += 2.0 * w;

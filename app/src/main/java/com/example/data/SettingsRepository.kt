@@ -6,6 +6,7 @@ import com.example.BuildConfig
 import com.example.data.api.GeminiModels
 import com.example.media.BlurRegion
 import com.example.media.BlurSettings
+import com.example.media.BlurStrength
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -265,12 +266,13 @@ class SettingsRepository(private val context: Context) {
         _settings.value = _settings.value.copy(showSubtitles = next)
     }
 
-    /** The blur box of a project (off, at the default position, if never set). */
+    /** The blur box of a project (off, at the default position and strength, if never set). */
     fun loadBlurSettings(projectId: Long): BlurSettings {
         val region = BlurRegion.decode(prefs.getString(blurRegionKey(projectId), null)) ?: BlurRegion.DEFAULT
         return BlurSettings(
             enabled = prefs.getBoolean(blurEnabledKey(projectId), false),
-            region = region
+            region = region,
+            strength = BlurStrength.clamp(prefs.getFloat(blurStrengthKey(projectId), BlurStrength.DEFAULT))
         )
     }
 
@@ -278,6 +280,7 @@ class SettingsRepository(private val context: Context) {
         prefs.edit()
             .putBoolean(blurEnabledKey(projectId), blur.enabled)
             .putString(blurRegionKey(projectId), blur.region.sanitized().encode())
+            .putFloat(blurStrengthKey(projectId), BlurStrength.clamp(blur.strength))
             .apply()
     }
 
@@ -285,11 +288,13 @@ class SettingsRepository(private val context: Context) {
         prefs.edit()
             .remove(blurEnabledKey(projectId))
             .remove(blurRegionKey(projectId))
+            .remove(blurStrengthKey(projectId))
             .apply()
     }
 
     private fun blurEnabledKey(projectId: Long) = "blur_enabled_$projectId"
     private fun blurRegionKey(projectId: Long) = "blur_region_$projectId"
+    private fun blurStrengthKey(projectId: Long) = "blur_strength_$projectId"
 
     fun clearCache(): Long {
         var freedBytes = 0L

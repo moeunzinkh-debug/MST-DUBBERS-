@@ -2,6 +2,8 @@ package com.example.media
 
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /**
  * The blur box, as a rectangle in normalized coordinates of the displayed video frame:
@@ -93,8 +95,46 @@ enum class BlurHandle { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
 /** Per-project blur box state. */
 data class BlurSettings(
     val enabled: Boolean = false,
-    val region: BlurRegion = BlurRegion.DEFAULT
+    val region: BlurRegion = BlurRegion.DEFAULT,
+    /** How strong the blur is, from 0 (weakest) to 1 (strongest); see [BlurStrength]. */
+    val strength: Float = BlurStrength.DEFAULT
 )
+
+/**
+ * Blur strength. The 0..1 value of the strength slider maps to the Gaussian sigma as a fraction
+ * of the picture's shorter side, on a log scale so every step of the slider looks alike. The
+ * preview and the exported video use the same sigma, so they look the same.
+ */
+object BlurStrength {
+    const val WEAK = 0.15f
+    const val MEDIUM = 0.5f
+    const val STRONG = 0.9f
+
+    /** Medium: the strength used before the strength setting existed. */
+    const val DEFAULT = MEDIUM
+
+    /** Sigma at strength 0 and 1, as a fraction of the picture's shorter side. */
+    const val MIN_SIGMA_FRACTION = 0.008f
+    const val MAX_SIGMA_FRACTION = 0.078f
+
+    /** Returns [strength] limited to 0..1 ([DEFAULT] if it is not a number). */
+    fun clamp(strength: Float): Float = if (strength.isNaN()) DEFAULT else strength.coerceIn(0f, 1f)
+
+    /** The Gaussian sigma for [strength], as a fraction of the picture's shorter side. */
+    fun sigmaFraction(strength: Float): Float =
+        MIN_SIGMA_FRACTION * (MAX_SIGMA_FRACTION / MIN_SIGMA_FRACTION).pow(clamp(strength))
+
+    fun percent(strength: Float): Int = (clamp(strength) * 100).roundToInt()
+
+    fun label(strength: Float): String {
+        val s = clamp(strength)
+        return when {
+            s < 0.34f -> "Weak"
+            s < 0.67f -> "Medium"
+            else -> "Strong"
+        }
+    }
+}
 
 /** Like coerceIn, but never throws when the range is empty (returns [low] instead). */
 private fun Float.clampTo(low: Float, high: Float): Float = max(low, min(this, high))

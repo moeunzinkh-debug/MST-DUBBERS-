@@ -285,14 +285,10 @@ jobs:
         if: always()
         run: python3 .github/scripts/test_summary.py
 
-      - name: Publish screenshot (paused)
-        if: always()
-        run: python3 .github/scripts/publish_screenshots.py screenshots.txt editor_paused
-
-      - name: Publish screenshot (playing)
-        if: always()
-        run: python3 .github/scripts/publish_screenshots.py screenshots.txt editor_playing
-
       - name: Publish screenshot (blur box moved)
         if: always()
         run: python3 .github/scripts/publish_screenshots.py screenshots.txt editor_blur_moved
+
+      - name: Publish screenshot (blur strength panel)
+        if: always()
+        run: python3 .github/scripts/publish_screenshots.py screenshots.txt editor_blur_strength

@@ -8,14 +8,20 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
+import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.data.SettingsRepository
@@ -24,6 +30,7 @@ import com.example.data.db.ProjectEntity
 import com.example.data.db.SegmentEntity
 import com.example.media.BlurRegion
 import com.example.media.BlurSettings
+import com.example.media.BlurStrength
 import com.example.ui.DubberViewModel
 import com.example.ui.screens.EditorScreen
 import com.example.ui.theme.MyApplicationTheme
@@ -40,7 +47,8 @@ import java.io.File
 
 /**
  * Opens the editor on a real project (portrait checkerboard video + Khmer lines) and checks the
- * player controls, tap-to-seek while playing, the subtitle toggle and the blur box gestures.
+ * player controls, tap-to-seek while playing, the subtitle toggle, the blur box gestures and the
+ * blur strength panel (long press on the blur icon).
  */
 @RunWith(AndroidJUnit4::class)
 class EditorScreenUiTest {
@@ -164,6 +172,53 @@ class EditorScreenUiTest {
     assertEquals(resized, SettingsRepository(app).loadBlurSettings(projectId).region)
     Thread.sleep(500)
     logScreenshot("editor_blur_moved")
+
+    // Holding the blur icon opens the strength panel below the player.
+    composeRule.onNodeWithTag("editor_blur_button").performTouchInput { longClick() }
+    composeRule.waitUntil(3_000) { composeRule.onAllNodesWithTag("blur_strength_panel").fetchSemanticsNodes().isNotEmpty() }
+    assertTrue("a long press doesn't turn the blur off", viewModel.blurSettings.value.enabled)
+
+    // Weak keeps the checkerboard visible under the box; Strong smooths it out (live preview).
+    composeRule.onNodeWithTag("blur_preset_weak").performClick()
+    composeRule.waitForIdle()
+    assertEquals(BlurStrength.WEAK, viewModel.blurSettings.value.strength, 0.001f)
+    Thread.sleep(400)
+    val weakContrast = blurBoxContrast()
+    composeRule.onNodeWithTag("blur_preset_strong").performClick()
+    composeRule.waitForIdle()
+    assertEquals(BlurStrength.STRONG, viewModel.blurSettings.value.strength, 0.001f)
+    composeRule.onNodeWithTag("blur_strength_value").assertTextEquals("Strong · 90%")
+    Thread.sleep(400)
+    val strongContrast = blurBoxContrast()
+    assertTrue("strong blur is smoother than weak (luma std dev $strongContrast vs $weakContrast)",
+      weakContrast > 20.0 && strongContrast < weakContrast * 0.5)
+    assertEquals(BlurStrength.STRONG, SettingsRepository(app).loadBlurSettings(projectId).strength, 0.001f)
+    logScreenshot("editor_blur_strength", left = 0.2f, top = 0.04f, bottom = 0.72f, width = 280, quality = 45)
+
+    // The slider sets any strength in between.
+    composeRule.onNodeWithTag("blur_strength_slider").performSemanticsAction(SemanticsActions.SetProgress) { it(0.3f) }
+    composeRule.waitForIdle()
+    assertEquals(0.3f, viewModel.blurSettings.value.strength, 0.02f)
+    composeRule.onNodeWithTag("blur_strength_value").assertTextEquals("Weak · 30%")
+
+    // Back closes the panel and the strength is kept for the project.
+    Espresso.pressBack()
+    composeRule.waitUntil(3_000) { composeRule.onAllNodesWithTag("blur_strength_panel").fetchSemanticsNodes().isEmpty() }
+    assertEquals(0.3f, SettingsRepository(app).loadBlurSettings(projectId).strength, 0.02f)
+  }
+
+  /**
+   * Luma standard deviation inside the upper part of the blur box: away from its dashed frame,
+   * its handles and the subtitle shown at the bottom of the picture.
+   */
+  private fun blurBoxContrast(): Double {
+    val bounds = composeRule.onNodeWithTag("blur_box", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+    return lumaStdDev(
+      bounds.left + bounds.width * 0.2f,
+      bounds.top + bounds.height * 0.15f,
+      bounds.right - bounds.width * 0.2f,
+      bounds.top + bounds.height * 0.55f
+    )
   }
 
   private fun tapLine(segmentId: Long) {
@@ -175,11 +230,21 @@ class EditorScreenUiTest {
   /** Luma standard deviation in the upper middle of the picture (away from the blur box). */
   private fun pictureContrast(): Double {
     val bounds = composeRule.onNodeWithTag("video_picture_area").fetchSemanticsNode().boundsInRoot
+    return lumaStdDev(
+      bounds.left + bounds.width * 0.45f,
+      bounds.top + bounds.height * 0.10f,
+      bounds.left + bounds.width * 0.55f,
+      bounds.top + bounds.height * 0.40f
+    )
+  }
+
+  /** Luma standard deviation of the screen inside the given rectangle (screen pixels). */
+  private fun lumaStdDev(left: Float, top: Float, right: Float, bottom: Float): Double {
     val screen = screenshot() ?: return 0.0
-    val x0 = (bounds.left + bounds.width * 0.45f).toInt().coerceIn(0, screen.width - 1)
-    val x1 = (bounds.left + bounds.width * 0.55f).toInt().coerceIn(x0 + 1, screen.width)
-    val y0 = (bounds.top + bounds.height * 0.10f).toInt().coerceIn(0, screen.height - 1)
-    val y1 = (bounds.top + bounds.height * 0.40f).toInt().coerceIn(y0 + 1, screen.height)
+    val x0 = left.toInt().coerceIn(0, screen.width - 1)
+    val x1 = right.toInt().coerceIn(x0 + 1, screen.width)
+    val y0 = top.toInt().coerceIn(0, screen.height - 1)
+    val y1 = bottom.toInt().coerceIn(y0 + 1, screen.height)
     var sum = 0.0
     var sumSq = 0.0
     var n = 0
@@ -206,12 +271,26 @@ class EditorScreenUiTest {
   }
 
   /** Logs a small JPEG of the screen as base64, so CI can show it without downloading artifacts. */
-  private fun logScreenshot(name: String) {
+  private fun logScreenshot(
+    name: String,
+    left: Float = 0f,
+    top: Float = 0f,
+    right: Float = 1f,
+    bottom: Float = 1f,
+    width: Int = 300,
+    quality: Int = 50
+  ) {
     val screen = screenshot() ?: return
-    val width = 300
-    val height = (screen.height * width.toFloat() / screen.width).toInt()
-    val small = Bitmap.createScaledBitmap(screen, width, height, true)
-    val bytes = ByteArrayOutputStream().also { small.compress(Bitmap.CompressFormat.JPEG, 50, it) }.toByteArray()
+    val x0 = (screen.width * left).toInt()
+    val y0 = (screen.height * top).toInt()
+    val part = Bitmap.createBitmap(
+      screen, x0, y0,
+      (screen.width * right).toInt() - x0,
+      (screen.height * bottom).toInt() - y0
+    )
+    val height = (part.height * width.toFloat() / part.width).toInt()
+    val small = Bitmap.createScaledBitmap(part, width, height, true)
+    val bytes = ByteArrayOutputStream().also { small.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
     val chunks = Base64.encodeToString(bytes, Base64.NO_WRAP).chunked(3000)
     chunks.forEachIndexed { index, chunk -> Log.i("MSTSHOT", "$name ${index + 1}/${chunks.size} $chunk") }
   }

@@ -10,7 +10,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +41,7 @@ import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Female
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.GridView
@@ -70,8 +73,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -81,7 +87,9 @@ import com.example.data.SettingsRepository
 import com.example.data.db.SegmentEntity
 import com.example.media.ExportKind
 import com.example.ui.DubberViewModel
+import com.example.ui.VoiceIssue
 import com.example.ui.components.AudioMixSheet
+import com.example.ui.components.BlurStrengthPanel
 import com.example.ui.components.EditSegmentSheet
 import com.example.ui.components.ExportDialog
 import com.example.ui.components.ExportSheet
@@ -109,6 +117,7 @@ import kotlinx.coroutines.delay
 import java.io.BufferedReader
 import java.io.InputStreamReader
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EditorScreen(
     projectId: Long,
@@ -146,6 +155,8 @@ fun EditorScreen(
     val seekRequest by viewModel.seekRequest.collectAsState()
     val blurSettings by viewModel.blurSettings.collectAsState()
     val exportState by viewModel.exportState.collectAsState()
+    val voiceIssues by viewModel.voiceIssues.collectAsState()
+    val haptics = LocalHapticFeedback.current
 
     // Stop playback when leaving the editor.
     DisposableEffect(Unit) {
@@ -153,6 +164,7 @@ fun EditorScreen(
     }
 
     var showMenu by remember { mutableStateOf(false) }
+    var showBlurPanel by remember { mutableStateOf(false) }
     var showAudioSheet by remember { mutableStateOf(false) }
     var showVoiceSheet by remember { mutableStateOf(false) }
     var showExportSheet by remember { mutableStateOf(false) }
@@ -161,10 +173,10 @@ fun EditorScreen(
     var speedAdjustSegment by remember { mutableStateOf<SegmentEntity?>(null) }
 
     LaunchedEffect(toastMessage) {
-        if (toastMessage != null) {
-            delay(3000)
-            viewModel.clearToast()
-        }
+        val message = toastMessage?.first ?: return@LaunchedEffect
+        // Long messages (e.g. the voice generation summary) stay longer; a tap closes them.
+        delay((3_000L + message.length * 45L).coerceAtMost(10_000L))
+        viewModel.clearToast()
     }
 
     val activeSegment = remember(segments, currentTime) {
@@ -251,19 +263,30 @@ fun EditorScreen(
                     )
                 }
 
-                // Blur box: hides burned-in text, in the preview and in the exported video
-                IconButton(
-                    onClick = {
-                        if (!blurSettings.enabled) {
-                            viewModel.showToast("Blur box on: drag it over the text, drag a corner to resize")
-                        }
-                        viewModel.toggleBlur()
-                    },
+                // Blur box: hides burned-in text, in the preview and in the exported video.
+                // Tap: on / off. Hold: blur strength panel.
+                Box(
                     modifier = Modifier
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(if (blurSettings.enabled) SkyAccent.copy(alpha = 0.18f) else Color.Transparent)
-                        .testTag("editor_blur_button")
+                        .combinedClickable(
+                            onClickLabel = if (blurSettings.enabled) "Remove blur box" else "Add blur box",
+                            onLongClickLabel = "Blur strength",
+                            role = Role.Button,
+                            onLongClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                showBlurPanel = true
+                            },
+                            onClick = {
+                                if (!blurSettings.enabled) {
+                                    viewModel.showToast("Blur box on: drag it over the text, drag a corner to resize. Hold the blur icon to change the strength.")
+                                }
+                                viewModel.toggleBlur()
+                            }
+                        )
+                        .testTag("editor_blur_button"),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.BlurOn,
@@ -415,7 +438,8 @@ fun EditorScreen(
                         .height(60.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(VoiceButtonBg)
-                        .clickable(enabled = voicingProgress == null && segments.isNotEmpty()) {
+                        // While voicing, a tap stops the run.
+                        .clickable(enabled = voicingProgress != null || segments.isNotEmpty()) {
                             viewModel.startBatchVoice()
                         }
                         .testTag("batch_voice_button"),
@@ -440,7 +464,7 @@ fun EditorScreen(
                             )
                         }
                         Text(
-                            text = "Edge TTS Dub",
+                            text = if (voicingProgress != null) "Tap to stop" else "Edge TTS Dub",
                             color = VoiceButtonFg,
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 13.sp,
@@ -448,8 +472,14 @@ fun EditorScreen(
                             modifier = Modifier.padding(top = 1.dp)
                         )
                         Text(
-                            text = voicingProgress?.let { "${it.done}/${it.total}" }
-                                ?: if (selectedIds.isNotEmpty()) "${selectedIds.size} selected" else "$voicedCount/${segments.size}",
+                            text = voicingProgress?.let { p ->
+                                when {
+                                    p.retryInSec != null -> "${p.done}/${p.total} · retry ${p.retryInSec}s"
+                                    p.failed > 0 -> "${p.done}/${p.total} · ${p.failed} failed"
+                                    else -> "${p.done}/${p.total}"
+                                }
+                            } ?: if (selectedIds.isNotEmpty()) "${selectedIds.size} selected" else "$voicedCount/${segments.size}",
+                            maxLines = 1,
                             color = VoiceButtonFg.copy(alpha = 0.75f),
                             fontSize = 11.sp,
                             lineHeight = 13.sp,
@@ -503,29 +533,53 @@ fun EditorScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            VideoPlayerView(
-                videoPath = project?.videoPath ?: "",
-                isPlaying = isPlaying,
-                onPlayPauseToggle = { viewModel.setPlaying(it) },
-                currentTimeSec = currentTime,
-                onSeek = { viewModel.seekTo(it) },
-                seekRequest = seekRequest,
-                durationSec = duration,
-                onDurationKnown = { viewModel.setDuration(it) },
-                onTimeUpdate = { viewModel.setTime(it) },
-                isMuted = isMuted,
-                onMuteToggle = { viewModel.toggleMute() },
-                activeSubtitleText = overlayText,
-                showSubtitles = settings.showSubtitles,
-                onToggleSubtitles = { viewModel.settingsRepository.toggleShowSubtitles() },
-                blurEnabled = blurSettings.enabled,
-                blurRegion = blurSettings.region,
-                onBlurRegionChange = { viewModel.updateBlurRegion(it) },
-                onBlurRegionChangeFinished = { viewModel.commitBlurRegion() },
-                isDubPlaying = isDubPlaying,
-                originalVolume = settings.originalVolume,
-                isTranscribing = isTranscribing
-            )
+            Box(modifier = Modifier.fillMaxWidth()) {
+                VideoPlayerView(
+                    videoPath = project?.videoPath ?: "",
+                    isPlaying = isPlaying,
+                    onPlayPauseToggle = { viewModel.setPlaying(it) },
+                    currentTimeSec = currentTime,
+                    onSeek = { viewModel.seekTo(it) },
+                    seekRequest = seekRequest,
+                    durationSec = duration,
+                    onDurationKnown = { viewModel.setDuration(it) },
+                    onTimeUpdate = { viewModel.setTime(it) },
+                    isMuted = isMuted,
+                    onMuteToggle = { viewModel.toggleMute() },
+                    activeSubtitleText = overlayText,
+                    showSubtitles = settings.showSubtitles,
+                    onToggleSubtitles = { viewModel.settingsRepository.toggleShowSubtitles() },
+                    blurEnabled = blurSettings.enabled,
+                    blurRegion = blurSettings.region,
+                    blurStrength = blurSettings.strength,
+                    onBlurRegionChange = { viewModel.updateBlurRegion(it) },
+                    onBlurRegionChangeFinished = { viewModel.commitBlurRegion() },
+                    isDubPlaying = isDubPlaying,
+                    originalVolume = settings.originalVolume,
+                    isTranscribing = isTranscribing
+                )
+
+                // Blur strength panel (hold the blur icon). It opens below the player, so the blur
+                // box stays visible while the strength changes.
+                Box(modifier = Modifier.align(Alignment.BottomEnd)) {
+                    DropdownMenu(
+                        expanded = showBlurPanel,
+                        onDismissRequest = {
+                            showBlurPanel = false
+                            viewModel.commitBlurSettings()
+                        },
+                        modifier = Modifier.background(DarkBg2)
+                    ) {
+                        BlurStrengthPanel(
+                            strength = blurSettings.strength,
+                            blurOn = blurSettings.enabled,
+                            onStrengthChange = { viewModel.updateBlurStrength(it) },
+                            onStrengthChangeFinished = { viewModel.commitBlurSettings() },
+                            onBlurOnChange = { viewModel.setBlurEnabled(it) }
+                        )
+                    }
+                }
+            }
 
             // Stats & Auto-Fit Bar
             Row(
@@ -664,6 +718,8 @@ fun EditorScreen(
                             isSelected = isSelected,
                             isBusy = isBusy,
                             isPlayingThisSegment = isPlayingThisSegment,
+                            voiceIssue = voiceIssues[seg.id]?.takeIf { seg.audioPath.isNullOrBlank() },
+                            onVoiceIssueClick = { viewModel.showVoiceIssue(seg) },
                             onSelect = { viewModel.toggleSegmentSelection(seg.id) },
                             onRowClick = { viewModel.seekToSegment(seg) },
                             onGenderToggle = {
@@ -695,7 +751,9 @@ fun EditorScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(if (isErr) Color(0xFFEF4444) else EmeraldAccent)
+                        .clickable { viewModel.clearToast() }
                         .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .testTag("editor_toast")
                 ) {
                     Text(
                         text = msg,
@@ -861,6 +919,8 @@ private fun SegmentRowItem(
     isSelected: Boolean,
     isBusy: Boolean,
     isPlayingThisSegment: Boolean,
+    voiceIssue: VoiceIssue?,
+    onVoiceIssueClick: () -> Unit,
     onSelect: () -> Unit,
     onRowClick: () -> Unit,
     onGenderToggle: () -> Unit,
@@ -1029,6 +1089,26 @@ private fun SegmentRowItem(
                         tint = DarkMuted,
                         modifier = Modifier.size(15.dp)
                     )
+                }
+
+                // This line couldn't be voiced: tap to see why
+                if (voiceIssue != null) {
+                    val issueColor = if (voiceIssue.skipped) Color(0xFFF59E0B) else Color(0xFFEF4444)
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onVoiceIssueClick)
+                            .testTag("voice_issue_${segment.id}"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ErrorOutline,
+                            contentDescription = if (voiceIssue.skipped) "No words to read" else "Voice failed",
+                            tint = issueColor,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
                 }
 
                 // Play / generate the AI voice of this line

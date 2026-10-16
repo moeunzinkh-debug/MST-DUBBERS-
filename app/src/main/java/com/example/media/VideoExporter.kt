@@ -38,7 +38,8 @@ class VideoExporter(context: Context) {
      * [audioFile]. The original audio is dropped.
      *
      * Without a blur box the video stream is copied as-is (fast, no quality loss). With a blur
-     * box, or if copying the stream fails, the video is re-encoded to H.264.
+     * box, or if copying the stream fails, the video is re-encoded to H.264. [blurSigmaFraction]
+     * is the blur strength (see [BlurStrength.sigmaFraction]).
      *
      * Must be called from a coroutine; the Transformer runs on the main thread.
      */
@@ -47,30 +48,33 @@ class VideoExporter(context: Context) {
         audioFile: File,
         blur: BlurRegion?,
         output: File,
+        blurSigmaFraction: Float = RegionBlurEffect.DEFAULT_SIGMA_FRACTION,
         onProgress: (percent: Int) -> Unit
     ) {
         output.parentFile?.mkdirs()
         if (blur == null) {
             try {
-                runTransformer(videoFile, audioFile, null, output, transmuxVideo = true, onProgress = onProgress)
+                runTransformer(videoFile, audioFile, null, blurSigmaFraction, output, transmuxVideo = true, onProgress = onProgress)
                 return
             } catch (e: ExportException) {
                 // E.g. a codec the MP4 muxer can't copy: fall back to re-encoding.
                 output.delete()
             }
         }
-        runTransformer(videoFile, audioFile, blur, output, transmuxVideo = false, onProgress = onProgress)
+        runTransformer(videoFile, audioFile, blur, blurSigmaFraction, output, transmuxVideo = false, onProgress = onProgress)
     }
 
     private suspend fun runTransformer(
         videoFile: File,
         audioFile: File,
         blur: BlurRegion?,
+        blurSigmaFraction: Float,
         output: File,
         transmuxVideo: Boolean,
         onProgress: (Int) -> Unit
     ): ExportResult = withContext(Dispatchers.Main) {
-        val videoEffects: List<Effect> = if (blur != null) RegionBlurEffect.create(blur) else emptyList()
+        val videoEffects: List<Effect> =
+            if (blur != null) RegionBlurEffect.create(blur, blurSigmaFraction) else emptyList()
         val videoItem = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(videoFile)))
             .setEffects(Effects(/* audioProcessors= */ emptyList(), videoEffects))
             .build()

@@ -70,6 +70,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.media.BlurRegion
+import com.example.media.BlurStrength
 import com.example.media.SeekRequest
 import com.example.ui.theme.DarkAccent
 import com.example.ui.theme.DarkMuted
@@ -103,6 +104,7 @@ fun VideoPlayerView(
     onToggleSubtitles: () -> Unit,
     blurEnabled: Boolean,
     blurRegion: BlurRegion,
+    blurStrength: Float,
     onBlurRegionChange: (BlurRegion) -> Unit,
     onBlurRegionChangeFinished: () -> Unit,
     modifier: Modifier = Modifier,
@@ -120,6 +122,8 @@ fun VideoPlayerView(
     val latestTimeSec by rememberUpdatedState(currentTimeSec)
     val latestDurationSec by rememberUpdatedState(durationSec)
     val latestBlurEnabled by rememberUpdatedState(blurEnabled)
+    val blurSigma = BlurStrength.sigmaFraction(blurStrength)
+    val latestBlurSigma by rememberUpdatedState(blurSigma)
 
     var videoAspect by remember(videoPath) { mutableFloatStateOf(16f / 9f) }
     var playbackError by remember(videoPath) { mutableStateOf<String?>(null) }
@@ -222,7 +226,7 @@ fun VideoPlayerView(
                 val now = SystemClock.uptimeMillis()
                 if (!p.isPlaying || now - lastSnapshotAt >= BLUR_SNAPSHOT_INTERVAL_MS) {
                     lastSnapshotAt = now
-                    snapshot.capture(textureView)
+                    snapshot.capture(textureView, latestBlurSigma)
                 }
             }
         }
@@ -299,9 +303,10 @@ fun VideoPlayerView(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Turning the blur box on while paused: copy the frame that is already on screen.
-    LaunchedEffect(player, blurEnabled) {
-        if (player != null && blurEnabled) snapshot.capture(textureView)
+    // Turning the blur box on, or changing its strength, while paused: copy the frame that is
+    // already on screen (no new frame will arrive to trigger it).
+    LaunchedEffect(player, blurEnabled, blurSigma) {
+        if (player != null && blurEnabled) snapshot.capture(textureView, blurSigma)
     }
 
     Column(

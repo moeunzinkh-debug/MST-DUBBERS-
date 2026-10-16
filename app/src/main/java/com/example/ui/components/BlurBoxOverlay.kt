@@ -37,12 +37,14 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.media.BlurHandle
 import com.example.media.BlurRegion
+import com.example.media.PreviewBlur
 import com.example.ui.theme.SkyAccent
 import kotlin.math.roundToInt
 
 /**
- * A tiny, pre-blurred copy of the current video frame. The blur box draws the part of it that
- * it covers, scaled up, which looks like a strong blur and follows the video in real time.
+ * A small, pre-blurred copy of the current video frame. The blur box draws the part of it that
+ * it covers, scaled up, which follows the video in real time. The copy's size depends on the
+ * blur strength (see [PreviewBlur]).
  */
 class FrameSnapshot {
     var bitmap: Bitmap? = null
@@ -54,25 +56,27 @@ class FrameSnapshot {
     private var pixels = IntArray(0)
     private var scratch = IntArray(0)
 
-    /** Copies the current frame of [textureView]. Must be called on the main thread. */
-    fun capture(textureView: TextureView): Boolean {
+    /**
+     * Copies the current frame of [textureView], blurred by [sigmaFraction] (Gaussian sigma as a
+     * fraction of the picture's shorter side, see [com.example.media.BlurStrength]).
+     * Must be called on the main thread.
+     */
+    fun capture(textureView: TextureView, sigmaFraction: Float): Boolean {
         if (!textureView.isAvailable || textureView.width <= 0 || textureView.height <= 0) return false
-        val width = SNAPSHOT_WIDTH
-        val height = (width * textureView.height / textureView.width.toFloat()).roundToInt().coerceIn(1, width * 4)
-        val target = bitmap?.takeIf { it.width == width && it.height == height }
-            ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap = it }
+        val size = PreviewBlur.snapshotSize(textureView.width, textureView.height, sigmaFraction)
+        val target = bitmap?.takeIf { it.width == size.width && it.height == size.height }
+            ?: Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888).also { bitmap = it }
         try {
             textureView.getBitmap(target)
         } catch (e: Exception) {
             return false
         }
-        boxBlur(target)
+        blur(target)
         version.intValue++
         return true
     }
 
-    /** Two-pass box blur, smoothing the upscaled image. Cheap: the bitmap is tiny. */
-    private fun boxBlur(bmp: Bitmap) {
+    private fun blur(bmp: Bitmap) {
         val w = bmp.width
         val h = bmp.height
         val n = w * h
@@ -81,37 +85,8 @@ class FrameSnapshot {
             scratch = IntArray(n)
         }
         bmp.getPixels(pixels, 0, w, 0, 0, w, h)
-        blurPass(pixels, scratch, w, h, horizontal = true)
-        blurPass(scratch, pixels, w, h, horizontal = false)
+        PreviewBlur.boxBlur(pixels, scratch, w, h)
         bmp.setPixels(pixels, 0, w, 0, 0, w, h)
-    }
-
-    private fun blurPass(src: IntArray, dst: IntArray, w: Int, h: Int, horizontal: Boolean) {
-        val lines = if (horizontal) h else w
-        val length = if (horizontal) w else h
-        for (line in 0 until lines) {
-            for (i in 0 until length) {
-                var r = 0
-                var g = 0
-                var b = 0
-                for (k in -BLUR_RADIUS..BLUR_RADIUS) {
-                    val j = (i + k).coerceIn(0, length - 1)
-                    val c = src[if (horizontal) line * w + j else j * w + line]
-                    r += (c shr 16) and 0xFF
-                    g += (c shr 8) and 0xFF
-                    b += c and 0xFF
-                }
-                val count = 2 * BLUR_RADIUS + 1
-                dst[if (horizontal) line * w + i else i * w + line] =
-                    (0xFF shl 24) or ((r / count) shl 16) or ((g / count) shl 8) or (b / count)
-            }
-        }
-    }
-
-    companion object {
-        /** Width of the snapshot in pixels: smaller means blurrier. */
-        const val SNAPSHOT_WIDTH = 72
-        private const val BLUR_RADIUS = 2
     }
 }
 
