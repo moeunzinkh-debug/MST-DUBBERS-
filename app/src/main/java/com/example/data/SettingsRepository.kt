@@ -3,6 +3,7 @@ package com.example.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.BuildConfig
+import com.example.data.api.GeminiModels
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -13,6 +14,7 @@ data class FitMode(val label: String, val rate: Float)
 
 data class AppSettings(
     val apiKey: String = "", // Gemini API key
+    val geminiModel: String = GeminiModels.DEFAULT, // see GeminiModels.OPTIONS (3.8 Flash / 3.6 Flash)
     val groqApiKey: String = "",
     val sealionApiKey: String = "",
     val sealionModel: String = "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
@@ -118,6 +120,7 @@ class SettingsRepository(private val context: Context) {
 
         return AppSettings(
             apiKey = effectiveKey,
+            geminiModel = GeminiModels.resolve(prefs.getString("gemini_model", GeminiModels.DEFAULT)),
             groqApiKey = prefs.getString("groq_api_key", "") ?: "",
             sealionApiKey = prefs.getString("sealion_api_key", "") ?: "",
             sealionModel = prefs.getString("sealion_model", "aisingapore/Qwen-SEA-LION-v4.5-27B-IT") ?: "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
@@ -146,6 +149,7 @@ class SettingsRepository(private val context: Context) {
     fun saveSettings(updated: AppSettings) {
         prefs.edit()
             .putString("api_key", updated.apiKey.trim())
+            .putString("gemini_model", updated.geminiModel)
             .putString("groq_api_key", updated.groqApiKey.trim())
             .putString("sealion_api_key", updated.sealionApiKey.trim())
             .putString("sealion_model", updated.sealionModel.trim())
@@ -168,10 +172,13 @@ class SettingsRepository(private val context: Context) {
 
     fun updateSettings(
         apiKey: String,
+        // Optional values default to the current setting so callers that omit them
+        // (e.g. the voice picker) don't reset them.
+        geminiModel: String = _settings.value.geminiModel,
         groqApiKey: String,
         sealionApiKey: String,
-        sealionModel: String = "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
-        sealionUrl: String = "https://api.together.xyz/v1/chat/completions",
+        sealionModel: String = _settings.value.sealionModel,
+        sealionUrl: String = _settings.value.sealionUrl,
         transcriptionEngine: String,
         translationEngine: String,
         customApiName: String,
@@ -186,6 +193,7 @@ class SettingsRepository(private val context: Context) {
     ) {
         prefs.edit()
             .putString("api_key", apiKey.trim())
+            .putString("gemini_model", geminiModel)
             .putString("groq_api_key", groqApiKey.trim())
             .putString("sealion_api_key", sealionApiKey.trim())
             .putString("sealion_model", sealionModel.trim())
@@ -205,6 +213,7 @@ class SettingsRepository(private val context: Context) {
 
         _settings.value = _settings.value.copy(
             apiKey = apiKey.trim(),
+            geminiModel = geminiModel,
             groqApiKey = groqApiKey.trim(),
             sealionApiKey = sealionApiKey.trim(),
             sealionModel = sealionModel.trim(),

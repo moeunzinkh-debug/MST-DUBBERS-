@@ -16,7 +16,8 @@ class TranslationClient(
     private val sealionKeyProvider: () -> String,
     private val sealionModelProvider: () -> String = { "aisingapore/Qwen-SEA-LION-v4.5-27B-IT" },
     private val sealionUrlProvider: () -> String = { "https://api.together.xyz/v1/chat/completions" },
-    private val customConfigProvider: () -> Quadruple<String, String, String, String> // name, url, key, model
+    private val customConfigProvider: () -> Quadruple<String, String, String, String>, // name, url, key, model
+    private val geminiModelProvider: () -> String = { GeminiModels.DEFAULT }
 ) {
     data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -77,13 +78,14 @@ class TranslationClient(
             contentsArray.put(contentObj)
             put("contents", contentsArray)
 
+            // No temperature/topP/topK: Gemini 3.6+ ignores them (future models reject them).
             put("generationConfig", JSONObject().apply {
                 put("responseMimeType", "application/json")
-                put("temperature", 0.3)
             })
         }
 
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+        val model = GeminiModels.resolve(geminiModelProvider())
+        val url = GeminiModels.generateContentUrl(model, apiKey)
         val request = Request.Builder()
             .url(url)
             .post(requestJson.toString().toRequestBody(jsonMediaType))
@@ -92,7 +94,7 @@ class TranslationClient(
         val response = client.newCall(request).execute()
         val responseBody = response.body?.string() ?: ""
         if (!response.isSuccessful) {
-            throw IOException("Gemini translation error ${response.code}: $responseBody")
+            throw IOException("Gemini translation error ($model) ${response.code}: $responseBody")
         }
 
         val textContent = extractCandidateText(responseBody)

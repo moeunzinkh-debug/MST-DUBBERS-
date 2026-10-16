@@ -34,11 +34,15 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
     private val database = AppDatabase.getInstance(application)
     val settingsRepository = SettingsRepository(application)
 
-    private val geminiClient = GeminiClient { settingsRepository.settings.value.apiKey }
+    private val geminiClient = GeminiClient(
+        apiKeyProvider = { settingsRepository.settings.value.apiKey },
+        modelProvider = { settingsRepository.settings.value.geminiModel }
+    )
 
     private val transcriptionClient = TranscriptionClient(
         geminiKeyProvider = { settingsRepository.settings.value.apiKey },
-        groqKeyProvider = { settingsRepository.settings.value.groqApiKey }
+        groqKeyProvider = { settingsRepository.settings.value.groqApiKey },
+        geminiModelProvider = { settingsRepository.settings.value.geminiModel }
     )
 
     private val translationClient = TranslationClient(
@@ -54,7 +58,8 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
                 s.customApiKey,
                 s.customApiModel
             )
-        }
+        },
+        geminiModelProvider = { settingsRepository.settings.value.geminiModel }
     )
 
     private val edgeTtsClient = EdgeTtsClient {

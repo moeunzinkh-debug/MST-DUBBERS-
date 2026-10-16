@@ -19,6 +19,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -69,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.AppSettings
 import com.example.data.SettingsRepository
+import com.example.data.api.GeminiModels
 import com.example.data.db.SegmentEntity
 import com.example.ui.theme.DarkAccent
 import com.example.ui.theme.DarkBg2
@@ -96,6 +99,7 @@ fun SettingsSheet(
     onClearCache: () -> Unit
 ) {
     var apiKeyText by remember { mutableStateOf(settings.apiKey) }
+    var selectedGeminiModel by remember { mutableStateOf(GeminiModels.resolve(settings.geminiModel)) }
     var groqApiKeyText by remember { mutableStateOf(settings.groqApiKey) }
     var sealionApiKeyText by remember { mutableStateOf(settings.sealionApiKey) }
     var sealionModelText by remember { mutableStateOf(settings.sealionModel) }
@@ -117,6 +121,7 @@ fun SettingsSheet(
 
     var showKey by remember { mutableStateOf(false) }
     var langDropdownExpanded by remember { mutableStateOf(false) }
+    var geminiModelDropdownExpanded by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -151,7 +156,7 @@ fun SettingsSheet(
             Text("Transcription Engine", color = SkyAccent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(6.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("gemini" to "Gemini 3.5 Flash", "groq_whisper" to "Groq Whisper Large v3").forEach { (key, label) ->
+                listOf("gemini" to GeminiModels.labelFor(selectedGeminiModel), "groq_whisper" to "Groq Whisper Large v3").forEach { (key, label) ->
                     val isSel = transcriptionEngine == key
                     Box(
                         modifier = Modifier
@@ -185,6 +190,68 @@ fun SettingsSheet(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(label, color = if (isSel) Color.White else DarkMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 2b. Gemini Model drop-down (Gemini 3.8 Flash / Gemini 3.6 Flash)
+            Text("Gemini AI Model (ម៉ូដែល Gemini)", color = SkyAccent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
+            ExposedDropdownMenuBox(
+                expanded = geminiModelDropdownExpanded,
+                onExpandedChange = { geminiModelDropdownExpanded = it }
+            ) {
+                OutlinedTextField(
+                    value = GeminiModels.labelFor(selectedGeminiModel),
+                    onValueChange = {},
+                    readOnly = true,
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = null, tint = SkyAccent)
+                    },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = geminiModelDropdownExpanded) },
+                    supportingText = {
+                        Text("Used for Gemini transcription & translation", color = DarkMuted, fontSize = 11.sp)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable, true)
+                        .testTag("gemini_model_dropdown"),
+                    colors = defaultTextFieldColors(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                ExposedDropdownMenu(
+                    expanded = geminiModelDropdownExpanded,
+                    onDismissRequest = { geminiModelDropdownExpanded = false },
+                    modifier = Modifier.background(DarkCard)
+                ) {
+                    GeminiModels.OPTIONS.forEach { option ->
+                        val isSelected = option.id == selectedGeminiModel
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(
+                                        text = option.label,
+                                        color = if (isSelected) SkyAccent else DarkFg,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(text = option.description, color = DarkMuted, fontSize = 12.sp)
+                                }
+                            },
+                            trailingIcon = {
+                                if (isSelected) {
+                                    Icon(imageVector = Icons.Default.Check, contentDescription = "Selected", tint = SkyAccent)
+                                }
+                            },
+                            onClick = {
+                                selectedGeminiModel = option.id
+                                geminiModelDropdownExpanded = false
+                            },
+                            modifier = Modifier.testTag("gemini_model_option_${option.id}")
+                        )
                     }
                 }
             }
@@ -424,6 +491,7 @@ fun SettingsSheet(
                     onSaveSettings(
                         settings.copy(
                             apiKey = apiKeyText,
+                            geminiModel = selectedGeminiModel,
                             groqApiKey = groqApiKeyText,
                             sealionApiKey = sealionApiKeyText,
                             sealionModel = sealionModelText,
