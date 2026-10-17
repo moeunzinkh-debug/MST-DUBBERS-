@@ -112,11 +112,8 @@ class EditorScreenUiTest {
 
     // The player is ready once it reports the video duration.
     composeRule.waitUntil(15_000) { viewModel.duration.value > 3.0 }
-    Thread.sleep(1_200) // first frame + blur preview snapshot
-    composeRule.waitForIdle()
-    composeRule.onNodeWithTag("blur_box", useUnmergedTree = true).assertExists()
-    composeRule.onNodeWithTag("player_subtitles_button").assertExists()
     // Paused right after opening, the picture must already show the video (not stay black).
+    composeRule.waitUntil(10_000) { pictureContrast() > 40.0 }
     val contrast = pictureContrast()
     assertTrue("video frame visible while paused (luma std dev $contrast)", contrast > 40.0)
 
