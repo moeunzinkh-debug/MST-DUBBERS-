@@ -89,4 +89,18 @@ class DubTimelineTest {
       assertTrue(previous.startSec + previous.maxDurationSec <= clips[i].startSec + 1e-9)
     }
   }
+
+  @Test
+  fun `calculateAutoSpeed preserves natural speed when duration is sufficient`() {
+    // 28 chars in Khmer (~2.15s natural speech) easily fits into 4.6s -> should be 1.0x natural speed!
+    val speed = com.example.data.SettingsRepository.calculateAutoSpeed("ខ្ញុំនឹងមកជួបអ្នកវិញក្រោយមក", 4.6)
+    assertEquals(1.0f, speed, 1e-4f)
+  }
+
+  @Test
+  fun `calculateAutoSpeed speeds up only when text exceeds the duration slot`() {
+    // 33 chars in Khmer (~2.54s natural speech) in 1.4s slot -> needs ~1.8x
+    val speed = com.example.data.SettingsRepository.calculateAutoSpeed("មនុស្សដែលស្លាប់ដោយសារពួកស៊ីកូរ", 1.4)
+    assertTrue("Speed should be sped up above 1.0x when duration is tight", speed > 1.3f)
+  }
 }

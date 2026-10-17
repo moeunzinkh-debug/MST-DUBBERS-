@@ -317,6 +317,39 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun updateSegmentWithShift(segment: SegmentEntity, shiftSubsequent: Boolean) {
+        clearVoiceIssue(segment.id)
+        viewModelScope.launch {
+            try {
+                if (shiftSubsequent) {
+                    repository.updateSegmentTimings(
+                        segmentId = segment.id,
+                        newStart = segment.start,
+                        newEnd = segment.end,
+                        shiftSubsequent = true
+                    )
+                }
+                repository.updateSegment(segment)
+            } catch (e: Exception) {
+                showToast("Failed to update segment: ${e.message}", true)
+            }
+        }
+    }
+
+    fun shiftAllSegments(offsetSec: Double) {
+        val proj = _currentProject.value ?: return
+        if (offsetSec == 0.0) return
+        viewModelScope.launch {
+            try {
+                repository.shiftAllSegments(proj.id, offsetSec)
+                val sign = if (offsetSec > 0) "+%.1fs".format(offsetSec) else "%.1fs".format(offsetSec)
+                showToast("Shifted timeline by $sign")
+            } catch (e: Exception) {
+                showToast("Failed to shift timeline: ${e.message}", true)
+            }
+        }
+    }
+
     fun deleteSegment(segmentId: Long) {
         viewModelScope.launch {
             try {

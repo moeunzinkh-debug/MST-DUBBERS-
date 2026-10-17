@@ -307,19 +307,14 @@ class DubberRepository(
         val audioDir = File(context.filesDir, "audio_dubs").apply { mkdirs() }
         val audioFile = File(audioDir, "a_${seg.id}_${System.currentTimeMillis()}.mp3")
 
-        // Auto-detect reading speed:
-        // - Text between 50 to 60+ chars: speed increases to 1.4, 1.5, or above
-        // - Short text: 1.0, 1.1, or 1.2
-        val autoSpeed = SettingsRepository.calculateAutoSpeed(textToSpeak, seg.end - seg.start)
-        val effectiveSpeed = seg.customSpeed ?: autoSpeed
-
         var durationSec: Double
         try {
             // Direct to user Edge TTS server: https://takumi0002-tts-kh.hf.space
+            // Generate clean, natural 1.0x audio; DubTimeline handles custom speed and auto-fit stretching.
             durationSec = edgeTtsClient.generateSpeech(
                 text = textToSpeak,
                 voice = voiceName,
-                speed = effectiveSpeed,
+                speed = 1.0f,
                 destFile = audioFile
             )
         } catch (e: Exception) {
@@ -363,6 +358,47 @@ class DubberRepository(
         )
         segmentDao.updateSegment(updated)
         updated
+    }
+
+    suspend fun shiftAllSegments(projectId: Long, offsetSec: Double) = withContext(Dispatchers.IO) {
+        val segs = segmentDao.getSegmentsForProject(projectId)
+        if (segs.isEmpty() || offsetSec == 0.0) return@withContext
+        val updated = segs.map { seg ->
+            val newStart = (seg.start + offsetSec).coerceAtLeast(0.0)
+            val newEnd = (seg.end + offsetSec).coerceAtLeast(newStart + 0.2)
+            seg.copy(start = newStart, end = newEnd)
+        }
+        segmentDao.insertSegments(updated)
+    }
+
+    suspend fun updateSegmentTimings(
+        segmentId: Long,
+        newStart: Double,
+        newEnd: Double,
+        shiftSubsequent: Boolean = false
+    ) = withContext(Dispatchers.IO) {
+        val seg = segmentDao.getSegmentById(segmentId) ?: return@withContext
+        val oldStart = seg.start
+        val delta = newStart - oldStart
+        val safeStart = newStart.coerceAtLeast(0.0)
+        val safeEnd = maxOf(newEnd, safeStart + 0.2)
+        if (shiftSubsequent && delta != 0.0) {
+            val all = segmentDao.getSegmentsForProject(seg.projectId)
+            val updated = all.map { s ->
+                when {
+                    s.id == segmentId -> s.copy(start = safeStart, end = safeEnd)
+                    s.idx > seg.idx -> {
+                        val sStart = (s.start + delta).coerceAtLeast(0.0)
+                        val sEnd = (s.end + delta).coerceAtLeast(sStart + 0.2)
+                        s.copy(start = sStart, end = sEnd)
+                    }
+                    else -> s
+                }
+            }
+            segmentDao.insertSegments(updated)
+        } else {
+            segmentDao.updateSegment(seg.copy(start = safeStart, end = safeEnd))
+        }
     }
 
     private fun getFileExtension(uri: Uri): String? {
