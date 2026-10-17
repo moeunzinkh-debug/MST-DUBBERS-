@@ -245,6 +245,10 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         if (!playing) {
             stopDubAudio()
             lastDubTriggerSegmentId = null
+        } else {
+            stopDubAudio()
+            lastDubTriggerSegmentId = null
+            checkAndTriggerDubAudio(_currentTime.value)
         }
     }
 
@@ -278,6 +282,9 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         val target = if (duration > 0.0) time.coerceIn(0.0, duration) else time.coerceAtLeast(0.0)
         _currentTime.value = target
         _seekRequest.value = SeekRequest(target, ++seekToken)
+        if (_isPlaying.value) {
+            checkAndTriggerDubAudio(target)
+        }
     }
 
     /** Jumps to the start of a subtitle line (tapping a line in the list). */
@@ -545,7 +552,14 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 val result = updated
                 when {
-                    result != null -> if (autoPlay) playAudioFile(result.audioPath, result.id, result.customSpeed)
+                    result != null -> if (autoPlay) {
+                        if (_duration.value > 0.0 || !_currentProject.value?.videoPath.isNullOrBlank()) {
+                            seekTo(result.start)
+                            setPlaying(true)
+                        } else {
+                            playAudioFile(result.audioPath, result.id, result.customSpeed)
+                        }
+                    }
                     outcome.skipped.isNotEmpty() -> showToast(
                         "Line ${segment.idx}: ${sentence(outcome.skipped.values.first())}. Edit the text, or leave this line silent.",
                         true
@@ -569,12 +583,17 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
     private fun sentence(message: String): String = message.trim().removeSuffix(".")
 
     fun previewOrGenerateAudio(segment: SegmentEntity) {
-        if (_currentlyPlayingSegmentId.value == segment.id) {
-            stopDubAudio()
+        if (_currentlyPlayingSegmentId.value == segment.id && _isPlaying.value) {
+            setPlaying(false)
             return
         }
         if (!segment.audioPath.isNullOrBlank()) {
-            playAudioFile(segment.audioPath, segment.id, segment.customSpeed)
+            if (_duration.value > 0.0 || !_currentProject.value?.videoPath.isNullOrBlank()) {
+                seekTo(segment.start)
+                setPlaying(true)
+            } else {
+                playAudioFile(segment.audioPath, segment.id, segment.customSpeed)
+            }
         } else {
             generateVoiceForSingleSegment(segment.id, autoPlay = true)
         }
