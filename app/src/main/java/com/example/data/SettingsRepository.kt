@@ -86,23 +86,29 @@ class SettingsRepository(private val context: Context) {
         )
 
         /**
-         * Auto-detect reading speed based on text length and duration:
-         * - Normal Khmer speaking rate is ~12-14 characters per second.
-         * - If the text naturally fits in the allocated duration, keeps natural 1.0x speed.
-         * - If the allocated time is tight, increases speed proportionally (up to 1.8x) so it fits.
+         * Auto-detect reading speed based on text length:
+         * - 50 to 60+ chars: speed increases to 1.4, 1.5 or above
+         * - Short text: normal (1.0), 1.1, or 1.2
+         * - Also scales with duration if allocated subtitle time is tight
          */
         fun calculateAutoSpeed(text: String, durationSec: Double = 0.0): Float {
             val clean = text.replace(Regex("\\s+"), "")
             val chars = clean.length
-            if (chars == 0 || durationSec <= 0.0) return 1.0f
-
-            // Natural speaking rate in Khmer is ~13 characters per second.
-            val naturalDurationSec = chars / 13.0
-            if (naturalDurationSec <= durationSec) {
-                return 1.0f
+            var s = when {
+                chars >= 60 -> 1.50f
+                chars >= 50 -> 1.40f
+                chars >= 35 -> 1.25f
+                chars >= 20 -> 1.15f
+                chars >= 10 -> 1.10f
+                else -> 1.00f
             }
-            val needed = (naturalDurationSec / durationSec).toFloat()
-            return (Math.round(needed.coerceIn(1.0f, 1.8f) * 10f) / 10f)
+            if (durationSec > 0.0 && chars > 0) {
+                val needed = ((chars / durationSec) / 14.0).toFloat()
+                if (needed > s) {
+                    s = needed
+                }
+            }
+            return (Math.round(s.coerceIn(1.0f, 1.8f) * 10f) / 10f)
         }
     }
 

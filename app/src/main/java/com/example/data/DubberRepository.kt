@@ -307,14 +307,19 @@ class DubberRepository(
         val audioDir = File(context.filesDir, "audio_dubs").apply { mkdirs() }
         val audioFile = File(audioDir, "a_${seg.id}_${System.currentTimeMillis()}.mp3")
 
+        // Auto-detect reading speed:
+        // - Text between 50 to 60+ chars: speed increases to 1.4, 1.5, or above
+        // - Short text: 1.0, 1.1, or 1.2
+        val autoSpeed = SettingsRepository.calculateAutoSpeed(textToSpeak, seg.end - seg.start)
+        val effectiveSpeed = seg.customSpeed ?: autoSpeed
+
         var durationSec: Double
         try {
             // Direct to user Edge TTS server: https://takumi0002-tts-kh.hf.space
-            // Generate clean, natural 1.0x audio; DubTimeline handles custom speed and auto-fit stretching.
             durationSec = edgeTtsClient.generateSpeech(
                 text = textToSpeak,
                 voice = voiceName,
-                speed = 1.0f,
+                speed = effectiveSpeed,
                 destFile = audioFile
             )
         } catch (e: Exception) {

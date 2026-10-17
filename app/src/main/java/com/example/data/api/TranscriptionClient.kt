@@ -72,11 +72,9 @@ class TranscriptionClient(
             })
 
             partsArray.put(JSONObject().apply {
-                put("text", "Transcribe all spoken dialogue in this video into subtitle segments with precise timing. " +
-                        "CRITICAL: The 'start' timestamp MUST be the exact second when dialogue actually begins being spoken, NOT 0.0 unless speech starts immediately at the beginning of the video. Do NOT include silent intro, pauses, or background music before speech begins. " +
-                        "The 'end' timestamp MUST be when the spoken line ends. " +
+                put("text", "Transcribe all spoken dialogue in this video into subtitle segments. " +
                         "Return ONLY a JSON array of objects: [{\"start\": seconds(number), \"end\": seconds(number), \"text\": string, \"gender\": \"female\"|\"male\"}]. " +
-                        "Keep each segment within natural sentence boundaries in the original spoken language, with accurate timestamps.")
+                        "Keep each segment between 1 and 7 seconds, in the original spoken language, with accurate timestamps.")
             })
 
             contentObj.put("role", "user")
