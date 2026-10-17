@@ -22,6 +22,7 @@ import com.example.data.db.AppDatabase
 import com.example.data.db.ProjectEntity
 import com.example.data.db.ProjectWithStats
 import com.example.data.db.SegmentEntity
+import com.example.media.AudioClipDecoder
 import com.example.media.BlurRegion
 import com.example.media.BlurSettings
 import com.example.media.BlurStrength
@@ -245,6 +246,10 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         if (!playing) {
             stopDubAudio()
             lastDubTriggerSegmentId = null
+        } else {
+            stopDubAudio()
+            lastDubTriggerSegmentId = null
+            checkAndTriggerDubAudio(_currentTime.value)
         }
     }
 
@@ -278,6 +283,9 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         val target = if (duration > 0.0) time.coerceIn(0.0, duration) else time.coerceAtLeast(0.0)
         _currentTime.value = target
         _seekRequest.value = SeekRequest(target, ++seekToken)
+        if (_isPlaying.value) {
+            checkAndTriggerDubAudio(target)
+        }
     }
 
     /** Jumps to the start of a subtitle line (tapping a line in the list). */
@@ -313,6 +321,39 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
                 repository.updateSegment(segment)
             } catch (e: Exception) {
                 showToast("Failed to update segment: ${e.message}", true)
+            }
+        }
+    }
+
+    fun updateSegmentWithShift(segment: SegmentEntity, shiftSubsequent: Boolean) {
+        clearVoiceIssue(segment.id)
+        viewModelScope.launch {
+            try {
+                if (shiftSubsequent) {
+                    repository.updateSegmentTimings(
+                        segmentId = segment.id,
+                        newStart = segment.start,
+                        newEnd = segment.end,
+                        shiftSubsequent = true
+                    )
+                }
+                repository.updateSegment(segment)
+            } catch (e: Exception) {
+                showToast("Failed to update segment: ${e.message}", true)
+            }
+        }
+    }
+
+    fun shiftAllSegments(offsetSec: Double) {
+        val proj = _currentProject.value ?: return
+        if (offsetSec == 0.0) return
+        viewModelScope.launch {
+            try {
+                repository.shiftAllSegments(proj.id, offsetSec)
+                val sign = if (offsetSec > 0) "+%.1fs".format(offsetSec) else "%.1fs".format(offsetSec)
+                showToast("Shifted timeline by $sign")
+            } catch (e: Exception) {
+                showToast("Failed to shift timeline: ${e.message}", true)
             }
         }
     }
@@ -512,7 +553,14 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 val result = updated
                 when {
-                    result != null -> if (autoPlay) playAudioFile(result.audioPath, result.id, result.customSpeed)
+                    result != null -> if (autoPlay) {
+                        if (_duration.value > 0.0 || !_currentProject.value?.videoPath.isNullOrBlank()) {
+                            seekTo(result.start)
+                            setPlaying(true)
+                        } else {
+                            playAudioFile(result.audioPath, result.id, result.customSpeed)
+                        }
+                    }
                     outcome.skipped.isNotEmpty() -> showToast(
                         "Line ${segment.idx}: ${sentence(outcome.skipped.values.first())}. Edit the text, or leave this line silent.",
                         true
@@ -536,12 +584,17 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
     private fun sentence(message: String): String = message.trim().removeSuffix(".")
 
     fun previewOrGenerateAudio(segment: SegmentEntity) {
-        if (_currentlyPlayingSegmentId.value == segment.id) {
-            stopDubAudio()
+        if (_currentlyPlayingSegmentId.value == segment.id && _isPlaying.value) {
+            setPlaying(false)
             return
         }
         if (!segment.audioPath.isNullOrBlank()) {
-            playAudioFile(segment.audioPath, segment.id, segment.customSpeed)
+            if (_duration.value > 0.0 || !_currentProject.value?.videoPath.isNullOrBlank()) {
+                seekTo(segment.start)
+                setPlaying(true)
+            } else {
+                playAudioFile(segment.audioPath, segment.id, segment.customSpeed)
+            }
         } else {
             generateVoiceForSingleSegment(segment.id, autoPlay = true)
         }
@@ -805,11 +858,28 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
                 val workDir = File(app.cacheDir, "export").apply { mkdirs() }
                 val baseName = MediaSaver.safeFileName("${project.name}_dub_${timestamp()}")
                 val wavFile = File(workDir, if (kind == ExportKind.AUDIO) "$baseName.wav" else "dub_track.wav")
+
+                val effectiveBgVolume = if (_isMuted.value) 0f else settings.value.originalVolume
+                val dubVol = settings.value.dubVolume
+                val bgAudio = if (kind == ExportKind.VIDEO && effectiveBgVolume > 0f && videoFile != null && videoFile.exists()) {
+                    withContext(Dispatchers.IO) {
+                        try {
+                            AudioClipDecoder.decodeToMono(videoFile)
+                        } catch (t: Throwable) {
+                            null
+                        }
+                    }
+                } else null
+
                 val track = withContext(Dispatchers.IO) {
                     DubTrackRenderer.render(
                         clips = clips,
                         durationSec = durationSec,
                         output = wavFile,
+                        backgroundAudio = bgAudio,
+                        backgroundVolume = effectiveBgVolume,
+                        duckingFactor = 0.10f,
+                        dubVolume = dubVol,
                         onClipDone = { done, total ->
                             _exportState.value = ExportUiState.Running(
                                 kind, ExportStage.BUILDING_VOICE_TRACK, done.toFloat() / total.coerceAtLeast(1)

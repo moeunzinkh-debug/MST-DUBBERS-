@@ -357,12 +357,81 @@ class DubberRepository(
             if (oldFile.exists()) oldFile.delete()
         }
 
+        // Audio VAD Snap: detect exact moment dialogue is spoken in the original video audio track.
+        val project = projectDao.getProjectById(seg.projectId)
+        val videoFile = project?.videoPath?.takeIf { it.isNotBlank() }?.let { File(it) }
+        val vadOnset = if (videoFile != null && videoFile.exists()) {
+            try {
+                com.example.media.AudioVadDetector.detectSpeechOnset(
+                    mediaFile = videoFile,
+                    startSec = seg.start,
+                    endSec = seg.end,
+                    ttsDurationSec = durationSec
+                )
+            } catch (e: Exception) {
+                null
+            }
+        } else null
+
+        // Auto-Snap: use detected VAD speech onset, or fallback to aligning end if shorter than slot.
+        val currentSlot = seg.end - seg.start
+        val newStart = when {
+            vadOnset != null -> vadOnset
+            durationSec > 0.0 && durationSec < currentSlot -> {
+                val aligned = Math.round((seg.end - durationSec) * 10.0) / 10.0
+                aligned.coerceAtLeast(seg.start)
+            }
+            else -> seg.start
+        }
+
         val updated = seg.copy(
+            start = newStart,
             audioPath = audioFile.absolutePath,
             audioDuration = durationSec
         )
         segmentDao.updateSegment(updated)
         updated
+    }
+
+    suspend fun shiftAllSegments(projectId: Long, offsetSec: Double) = withContext(Dispatchers.IO) {
+        val segs = segmentDao.getSegmentsForProject(projectId)
+        if (segs.isEmpty() || offsetSec == 0.0) return@withContext
+        val updated = segs.map { seg ->
+            val newStart = (seg.start + offsetSec).coerceAtLeast(0.0)
+            val newEnd = (seg.end + offsetSec).coerceAtLeast(newStart + 0.2)
+            seg.copy(start = newStart, end = newEnd)
+        }
+        segmentDao.insertSegments(updated)
+    }
+
+    suspend fun updateSegmentTimings(
+        segmentId: Long,
+        newStart: Double,
+        newEnd: Double,
+        shiftSubsequent: Boolean = false
+    ) = withContext(Dispatchers.IO) {
+        val seg = segmentDao.getSegmentById(segmentId) ?: return@withContext
+        val oldStart = seg.start
+        val delta = newStart - oldStart
+        val safeStart = newStart.coerceAtLeast(0.0)
+        val safeEnd = maxOf(newEnd, safeStart + 0.2)
+        if (shiftSubsequent && delta != 0.0) {
+            val all = segmentDao.getSegmentsForProject(seg.projectId)
+            val updated = all.map { s ->
+                when {
+                    s.id == segmentId -> s.copy(start = safeStart, end = safeEnd)
+                    s.idx > seg.idx -> {
+                        val sStart = (s.start + delta).coerceAtLeast(0.0)
+                        val sEnd = (s.end + delta).coerceAtLeast(sStart + 0.2)
+                        s.copy(start = sStart, end = sEnd)
+                    }
+                    else -> s
+                }
+            }
+            segmentDao.insertSegments(updated)
+        } else {
+            segmentDao.updateSegment(seg.copy(start = safeStart, end = safeEnd))
+        }
     }
 
     private fun getFileExtension(uri: Uri): String? {

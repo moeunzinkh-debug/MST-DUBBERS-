@@ -50,6 +50,10 @@ object DubTrackRenderer {
         durationSec: Double,
         output: File,
         decode: (File) -> PcmAudio = AudioClipDecoder::decodeToMono,
+        backgroundAudio: PcmAudio? = null,
+        backgroundVolume: Float = 1.0f,
+        duckingFactor: Float = 0.10f,
+        dubVolume: Float = 1.0f,
         onClipDone: (done: Int, total: Int) -> Unit = { _, _ -> },
         checkCancelled: () -> Unit = {}
     ): Result {
@@ -58,14 +62,25 @@ object DubTrackRenderer {
         var written = 0
         var failed = 0
 
+        val bgSamples: ShortArray? = backgroundAudio?.let { bg ->
+            if (bg.samples.isEmpty()) null
+            else if (bg.sampleRate == sampleRate) bg.samples
+            else timeStretch(bg, 1f, sampleRate)
+        }
+
         output.parentFile?.mkdirs()
-        WavWriter(output, sampleRate).use { writer ->
+        WavWriter(
+            file = output,
+            sampleRate = sampleRate,
+            bgSamples = bgSamples,
+            backgroundVolume = backgroundVolume
+        ).use { writer ->
             for ((index, clip) in clips.withIndex()) {
                 checkCancelled()
                 val startSample = (clip.startSec * sampleRate).roundToLong()
                 if (startSample >= totalSamples) break
                 if (startSample > writer.samplesWritten) {
-                    writer.writeSilence(startSample - writer.samplesWritten)
+                    writer.writeBackground(startSample - writer.samplesWritten)
                 }
 
                 val pcm = try {
@@ -86,13 +101,13 @@ object DubTrackRenderer {
                     val from = skip.toInt()
                     val wasCut = count < pcm.size - from
                     if (wasCut) fadeOut(pcm, from + count, (CUT_FADE_SEC * sampleRate).toInt())
-                    writer.writeSamples(pcm, from, count)
+                    writer.writeMixed(pcm, from, count, dubVolume, duckingFactor)
                     written++
                 }
                 onClipDone(index + 1, clips.size)
             }
             if (totalSamples > writer.samplesWritten) {
-                writer.writeSilence(totalSamples - writer.samplesWritten)
+                writer.writeBackground(totalSamples - writer.samplesWritten)
             }
         }
         return Result(output, totalSamples.toDouble() / sampleRate, written, failed)
@@ -163,40 +178,98 @@ object DubTrackRenderer {
 }
 
 /** Streams mono 16-bit PCM samples into a WAV file; the header is fixed up on [close]. */
-internal class WavWriter(private val file: File, private val sampleRate: Int) : Closeable {
+internal class WavWriter(
+    private val file: File,
+    private val sampleRate: Int,
+    private val bgSamples: ShortArray? = null,
+    private val backgroundVolume: Float = 1.0f
+) : Closeable {
     private val stream = BufferedOutputStream(FileOutputStream(file), 64 * 1024)
     private val scratch = ByteArray(16 * 1024)
     var samplesWritten = 0L
         private set
 
+    // Gain smoother for ducking: ~30ms exponential glide
+    private var currentDuckingGain = 1.0f
+    private val smoothingFactor = (1.0f / (0.030f * sampleRate)).coerceIn(0.0005f, 0.05f)
+
     init {
         stream.write(WavCodec.header(sampleRate, 1, 0))
     }
 
-    fun writeSilence(count: Long) {
+    fun writeBackground(count: Long) {
+        val bg = bgSamples
+        val bgVol = backgroundVolume
+        val hasBg = bg != null && bgVol > 0f
+
         var remaining = count
-        scratch.fill(0)
         while (remaining > 0) {
             val n = min(remaining, (scratch.size / 2).toLong()).toInt()
+            if (!hasBg) {
+                scratch.fill(0, 0, n * 2)
+            } else {
+                for (k in 0 until n) {
+                    val pos = samplesWritten + k
+                    currentDuckingGain += (1.0f - currentDuckingGain) * smoothingFactor
+                    val origSample = if (pos < bg.size) bg[pos.toInt()].toFloat() else 0f
+                    val s = (origSample * bgVol * currentDuckingGain).coerceIn(
+                        Short.MIN_VALUE.toFloat(),
+                        Short.MAX_VALUE.toFloat()
+                    ).toInt()
+                    scratch[2 * k] = (s and 0xFF).toByte()
+                    scratch[2 * k + 1] = ((s shr 8) and 0xFF).toByte()
+                }
+            }
             stream.write(scratch, 0, n * 2)
+            samplesWritten += n
             remaining -= n
         }
-        samplesWritten += count
     }
 
-    fun writeSamples(samples: ShortArray, offset: Int, count: Int) {
+    fun writeMixed(
+        clipPcm: ShortArray,
+        offset: Int,
+        count: Int,
+        dubVolume: Float,
+        duckingFactor: Float
+    ) {
+        val bg = bgSamples
+        val bgVol = backgroundVolume
+        val hasBg = bg != null && bgVol > 0f
+
         var i = 0
         while (i < count) {
             val n = min(count - i, scratch.size / 2)
             for (k in 0 until n) {
-                val v = samples[offset + i + k].toInt()
-                scratch[2 * k] = (v and 0xFF).toByte()
-                scratch[2 * k + 1] = ((v shr 8) and 0xFF).toByte()
+                val clipSample = clipPcm[offset + i + k].toFloat() * dubVolume
+                val s = if (hasBg) {
+                    val pos = samplesWritten + k
+                    currentDuckingGain += (duckingFactor - currentDuckingGain) * smoothingFactor
+                    val origSample = if (pos < bg.size) bg[pos.toInt()].toFloat() else 0f
+                    val duckedBg = origSample * bgVol * currentDuckingGain
+                    (clipSample + duckedBg).coerceIn(
+                        Short.MIN_VALUE.toFloat(),
+                        Short.MAX_VALUE.toFloat()
+                    ).toInt()
+                } else {
+                    clipSample.coerceIn(
+                        Short.MIN_VALUE.toFloat(),
+                        Short.MAX_VALUE.toFloat()
+                    ).toInt()
+                }
+                scratch[2 * k] = (s and 0xFF).toByte()
+                scratch[2 * k + 1] = ((s shr 8) and 0xFF).toByte()
             }
             stream.write(scratch, 0, n * 2)
+            samplesWritten += n
             i += n
         }
-        samplesWritten += count
+    }
+
+    fun writeSilence(count: Long) = writeBackground(count)
+
+    fun writeSamples(samples: ShortArray, offset: Int, count: Int) {
+        writeMixed(samples, offset, count, dubVolume = 1.0f, duckingFactor = 1.0f)
     }
 
     override fun close() {

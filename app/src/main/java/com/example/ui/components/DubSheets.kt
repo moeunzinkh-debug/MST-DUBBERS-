@@ -53,6 +53,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -323,12 +324,41 @@ fun SettingsSheet(
                     colors = defaultTextFieldColors(),
                     shape = RoundedCornerShape(10.dp)
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Popular Models (ចុចដើម្បីជ្រើសរើស):", color = DarkMuted, fontSize = 11.sp)
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "Qwen-SEA-LION-v4.5-27B-IT" to "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
+                        "Llama-v3-70B-IT" to "aisingapore/Llama-SEA-LION-v3-70B-IT"
+                    ).forEach { (label, modelId) ->
+                        val isSelected = sealionModelText == modelId
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSelected) SkyAccent.copy(alpha = 0.2f) else DarkCard)
+                                .border(1.dp, if (isSelected) SkyAccent else DarkLine, RoundedCornerShape(8.dp))
+                                .clickable { sealionModelText = modelId }
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (isSelected) SkyAccent else DarkFg,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
                 Spacer(modifier = Modifier.height(6.dp))
                 OutlinedTextField(
                     value = sealionUrlText,
                     onValueChange = { sealionUrlText = it },
                     label = { Text("SEA-LION Endpoint URL") },
-                    placeholder = { Text("https://api.together.xyz/v1/chat/completions") },
+                    placeholder = { Text("https://api.sea-lion.ai/v1/") },
                     modifier = Modifier.fillMaxWidth(),
                     colors = defaultTextFieldColors(),
                     shape = RoundedCornerShape(10.dp)
@@ -825,8 +855,9 @@ fun AudioMixSheet(
 @Composable
 fun EditSegmentSheet(
     segment: SegmentEntity?,
+    currentTimeSec: Double = 0.0,
     onDismiss: () -> Unit,
-    onSave: (SegmentEntity) -> Unit,
+    onSave: (SegmentEntity, Boolean) -> Unit,
     onRegenerateVoice: (Long) -> Unit,
     onDelete: (Long) -> Unit
 ) {
@@ -834,6 +865,7 @@ fun EditSegmentSheet(
 
     var startText by remember(segment) { mutableStateOf(segment.start.toString()) }
     var endText by remember(segment) { mutableStateOf(segment.end.toString()) }
+    var shiftSubsequent by remember(segment) { mutableStateOf(false) }
     var gender by remember(segment) { mutableStateOf(segment.gender) }
     var originalText by remember(segment) { mutableStateOf(segment.text) }
     var translationText by remember(segment) { mutableStateOf(segment.translation ?: "") }
@@ -844,6 +876,23 @@ fun EditSegmentSheet(
         val txt = translationText.ifBlank { originalText }
         val dur = ((endText.toDoubleOrNull() ?: segment.end) - (startText.toDoubleOrNull() ?: segment.start)).coerceAtLeast(0.3)
         SettingsRepository.calculateAutoSpeed(txt, dur)
+    }
+
+    fun nudgeStart(delta: Double) {
+        val cur = (startText.toDoubleOrNull() ?: segment.start) + delta
+        val safe = cur.coerceAtLeast(0.0)
+        startText = (Math.round(safe * 100.0) / 100.0).toString()
+        val curEnd = endText.toDoubleOrNull() ?: segment.end
+        if (curEnd <= safe) {
+            endText = (Math.round((safe + 0.5) * 100.0) / 100.0).toString()
+        }
+    }
+
+    fun nudgeEnd(delta: Double) {
+        val curStart = startText.toDoubleOrNull() ?: segment.start
+        val cur = (endText.toDoubleOrNull() ?: segment.end) + delta
+        val safe = maxOf(curStart + 0.2, cur)
+        endText = (Math.round(safe * 100.0) / 100.0).toString()
     }
 
     ModalBottomSheet(
@@ -887,6 +936,22 @@ fun EditSegmentSheet(
                         colors = defaultTextFieldColors(),
                         shape = RoundedCornerShape(10.dp)
                     )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf(-1.0 to "-1s", -0.1 to "-.1s", 0.1 to "+.1s", 1.0 to "+1s").forEach { (d, lbl) ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(DarkCard)
+                                    .clickable { nudgeStart(d) }
+                                    .padding(vertical = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(lbl, color = DarkFg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text("End (seconds)", color = DarkMuted, fontSize = 12.sp)
@@ -897,6 +962,82 @@ fun EditSegmentSheet(
                         singleLine = true,
                         colors = defaultTextFieldColors(),
                         shape = RoundedCornerShape(10.dp)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf(-1.0 to "-1s", -0.1 to "-.1s", 0.1 to "+.1s", 1.0 to "+1s").forEach { (d, lbl) ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(DarkCard)
+                                    .clickable { nudgeEnd(d) }
+                                    .padding(vertical = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(lbl, color = DarkFg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Snap to current video time button
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    val cur = Math.round(currentTimeSec * 100.0) / 100.0
+                    val oldStart = startText.toDoubleOrNull() ?: segment.start
+                    startText = cur.toString()
+                    val curDur = ((endText.toDoubleOrNull() ?: segment.end) - oldStart).coerceAtLeast(0.5)
+                    endText = (Math.round((cur + curDur) * 100.0) / 100.0).toString()
+                },
+                modifier = Modifier.fillMaxWidth().height(36.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = DarkCard2),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.VideoFile, contentDescription = null, tint = SkyAccent, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Snap Start to Video: %.2fs (យកម៉ោងវីដេអូ)".format(currentTimeSec),
+                    color = SkyAccent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            // Shift subsequent lines checkbox
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(DarkCard)
+                    .clickable { shiftSubsequent = !shiftSubsequent }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Switch(
+                    checked = shiftSubsequent,
+                    onCheckedChange = { shiftSubsequent = it },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = DarkAccent,
+                        uncheckedTrackColor = DarkCard2
+                    )
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "Shift subsequent lines together",
+                        color = DarkFg,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "រំកិលបន្ទាត់បន្ទាប់ទាំងអស់តាមនោះដែរ",
+                        color = DarkMuted,
+                        fontSize = 11.sp
                     )
                 }
             }
@@ -1040,13 +1181,14 @@ fun EditSegmentSheet(
                         val e = endText.toDoubleOrNull() ?: segment.end
                         onSave(
                             segment.copy(
-                                start = s,
+                                start = s.coerceAtLeast(0.0),
                                 end = maxOf(e, s + 0.1),
                                 gender = gender,
                                 customSpeed = customSpeedValue,
                                 text = originalText,
                                 translation = translationText.ifBlank { null }
-                            )
+                            ),
+                            shiftSubsequent
                         )
                         onDismiss()
                     },
@@ -1063,14 +1205,14 @@ fun EditSegmentSheet(
                         val s = startText.toDoubleOrNull() ?: segment.start
                         val e = endText.toDoubleOrNull() ?: segment.end
                         val updated = segment.copy(
-                            start = s,
+                            start = s.coerceAtLeast(0.0),
                             end = maxOf(e, s + 0.1),
                             gender = gender,
                             customSpeed = customSpeedValue,
                             text = originalText,
                             translation = translationText.ifBlank { null }
                         )
-                        onSave(updated)
+                        onSave(updated, shiftSubsequent)
                         onRegenerateVoice(segment.id)
                         onDismiss()
                     },
@@ -1100,6 +1242,123 @@ fun EditSegmentSheet(
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
+}
+
+// --- Shift All Timestamps Dialog ---
+@Composable
+fun ShiftTimelineDialog(
+    currentTimeSec: Double,
+    firstSegmentStart: Double?,
+    onDismiss: () -> Unit,
+    onApplyShift: (Double) -> Unit
+) {
+    var offsetText by remember { mutableStateOf("") }
+    val recommendedShift = remember(currentTimeSec, firstSegmentStart) {
+        if (firstSegmentStart != null && currentTimeSec > 0.0) {
+            val d = (Math.round((currentTimeSec - firstSegmentStart) * 10.0) / 10.0)
+            if (kotlin.math.abs(d) > 0.05) d else null
+        } else null
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DarkBg2,
+        title = {
+            Text(
+                text = "Shift Timeline (រំកិលម៉ោងទាំងអស់)",
+                color = DarkFg,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "រំកិលម៉ោងចាប់ផ្តើម និងបញ្ចប់នៃបន្ទាត់ទាំងអស់ក្នុងគម្រោង ទៅមុខ (+) ឬថយក្រោយ (-) ឱ្យត្រូវនឹងពេលមនុស្សនិយាយពិតប្រាកដក្នុងវីដេអូ។",
+                    color = DarkMuted,
+                    fontSize = 13.sp,
+                    lineHeight = 17.sp
+                )
+
+                if (recommendedShift != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            onApplyShift(recommendedShift)
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = SkyAccent.copy(alpha = 0.2f)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Align Line 1 to Video (${if (recommendedShift > 0) "+%.1fs".format(recommendedShift) else "%.1fs".format(recommendedShift)})",
+                            color = SkyAccent,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("Quick Shift (រំកិលរហ័ស)", color = DarkMuted, fontSize = 12.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-2.0 to "-2s", -1.0 to "-1s", 1.0 to "+1s", 2.0 to "+2s", 4.6 to "+4.6s").forEach { (amount, label) ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(DarkCard)
+                                .border(1.dp, DarkLine, RoundedCornerShape(8.dp))
+                                .clickable {
+                                    onApplyShift(amount)
+                                    onDismiss()
+                                }
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(text = label, color = DarkFg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Text("Custom Offset (seconds)", color = DarkMuted, fontSize = 12.sp)
+                Spacer(modifier = Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = offsetText,
+                    onValueChange = { offsetText = it },
+                    placeholder = { Text("e.g. +4.6 or -1.5", color = DarkMuted.copy(alpha = 0.5f)) },
+                    singleLine = true,
+                    colors = defaultTextFieldColors(),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val v = offsetText.toDoubleOrNull()
+                    if (v != null && v != 0.0) {
+                        onApplyShift(v)
+                        onDismiss()
+                    }
+                },
+                enabled = offsetText.toDoubleOrNull() != null && offsetText.toDoubleOrNull() != 0.0,
+                colors = ButtonDefaults.buttonColors(containerColor = DarkAccent),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Apply", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = DarkMuted)
+            }
+        }
+    )
 }
 
 // --- Speed Adjust Sheet (Quick manual speed picker from badge) ---
@@ -1306,6 +1565,7 @@ fun ExportSheet(
     voicedCount: Int,
     hasVideo: Boolean,
     blurEnabled: Boolean,
+    isMuted: Boolean = false,
     onDismiss: () -> Unit,
     onExportVideo: () -> Unit,
     onExportSrt: () -> Unit,
@@ -1400,7 +1660,8 @@ fun ExportSheet(
                             text = when {
                                 !hasVideo -> "This project has no video file"
                                 voicedCount == 0 -> "Generate the AI voices first (Edge TTS Dub)"
-                                else -> "AI voice replaces the original audio · សំឡេង AI ជំនួសសំឡេងដើម"
+                                isMuted -> "Muted: AI voice only · សំឡេង AI សុទ្ធ (បិទសំឡេងដើម)"
+                                else -> "Mixes original audio (10% during speech) + AI voice · បញ្ចូលសំឡេងដើម (10% ពេលនិយាយ) + AI"
                             },
                             color = Color.White.copy(alpha = 0.8f),
                             fontSize = 12.sp

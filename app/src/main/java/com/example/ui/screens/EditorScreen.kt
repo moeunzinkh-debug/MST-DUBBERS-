@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Translate
@@ -94,6 +95,7 @@ import com.example.ui.components.EditSegmentSheet
 import com.example.ui.components.ExportDialog
 import com.example.ui.components.ExportSheet
 import com.example.ui.components.SettingsSheet
+import com.example.ui.components.ShiftTimelineDialog
 import com.example.ui.components.SpeedAdjustSheet
 import com.example.ui.components.VideoPlayerView
 import com.example.ui.components.VoiceSelectionSheet
@@ -169,6 +171,7 @@ fun EditorScreen(
     var showVoiceSheet by remember { mutableStateOf(false) }
     var showExportSheet by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+    var showShiftTimelineDialog by remember { mutableStateOf(false) }
     var editingSegment by remember { mutableStateOf<SegmentEntity?>(null) }
     var speedAdjustSegment by remember { mutableStateOf<SegmentEntity?>(null) }
 
@@ -349,6 +352,14 @@ fun EditorScreen(
                             onClick = {
                                 showMenu = false
                                 viewModel.settingsRepository.toggleShowSubtitles()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Shift Timeline (រំកិលម៉ោងទាំងអស់)", color = DarkFg) },
+                            leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null, tint = SkyAccent) },
+                            onClick = {
+                                showMenu = false
+                                showShiftTimelineDialog = true
                             }
                         )
                         DropdownMenuItem(
@@ -843,9 +854,10 @@ fun EditorScreen(
     if (editingSegment != null) {
         EditSegmentSheet(
             segment = editingSegment,
+            currentTimeSec = currentTime,
             onDismiss = { editingSegment = null },
-            onSave = { updated ->
-                viewModel.updateSegment(updated)
+            onSave = { updated, shiftSubsequent ->
+                viewModel.updateSegmentWithShift(updated, shiftSubsequent)
                 editingSegment = null
             },
             onRegenerateVoice = { id ->
@@ -855,6 +867,17 @@ fun EditorScreen(
             onDelete = { id ->
                 viewModel.deleteSegment(id)
                 editingSegment = null
+            }
+        )
+    }
+
+    if (showShiftTimelineDialog) {
+        ShiftTimelineDialog(
+            currentTimeSec = currentTime,
+            firstSegmentStart = segments.firstOrNull()?.start,
+            onDismiss = { showShiftTimelineDialog = false },
+            onApplyShift = { offset ->
+                viewModel.shiftAllSegments(offset)
             }
         )
     }
@@ -887,6 +910,7 @@ fun EditorScreen(
             voicedCount = voicedCount,
             hasVideo = !project?.videoPath.isNullOrBlank(),
             blurEnabled = blurSettings.enabled,
+            isMuted = isMuted,
             onDismiss = { showExportSheet = false },
             onExportVideo = {
                 showExportSheet = false
