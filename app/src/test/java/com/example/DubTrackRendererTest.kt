@@ -103,6 +103,44 @@ class DubTrackRendererTest {
   }
 
   @Test
+  fun `background audio is mixed and ducked during dubbed voice`() {
+    val voiceFile = tmp.newFile("voice.mp3")
+    val decoded = mapOf(voiceFile.name to tone(1.0, frequency = 880.0))
+    val clips = listOf(
+      DubClip(1, voiceFile.absolutePath, startSec = 1.0, rate = 1f, maxDurationSec = 1.0)
+    )
+    val background = tone(3.0, sampleRate = 44_100, frequency = 440.0)
+    val output = File(tmp.root, "mixed_track.wav")
+
+    val result = DubTrackRenderer.render(
+      clips = clips,
+      durationSec = 3.0,
+      output = output,
+      decode = { decoded.getValue(it.name) },
+      backgroundAudio = background,
+      backgroundVolume = 1.0f,
+      duckingFactor = 0.10f,
+      dubVolume = 1.0f
+    )
+
+    assertEquals(1, result.clipsWritten)
+    val track = WavCodec.readPcm16(output)!!
+    assertEquals(3.0, track.durationSec, 0.001)
+
+    // Before speech (0.1 to 0.8s): background plays loud (~0.35)
+    val beforeRms = rms(track, 0.1, 0.8)
+    assertTrue("loud background before voice: $beforeRms", beforeRms > 0.25)
+
+    // During speech (1.2 to 1.8s): voice + ducked background
+    val duringRms = rms(track, 1.2, 1.8)
+    assertTrue("speech present during voice: $duringRms", duringRms > 0.2)
+
+    // After speech (2.2 to 2.9s): background returns to full volume
+    val afterRms = rms(track, 2.2, 2.9)
+    assertTrue("loud background restored after voice: $afterRms", afterRms > 0.25)
+  }
+
+  @Test
   fun `stereo wav files with extra chunks are read as mono`() {
     val frames = 1000
     val pcm = ByteBuffer.allocate(frames * 4).order(ByteOrder.LITTLE_ENDIAN)

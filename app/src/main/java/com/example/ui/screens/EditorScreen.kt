@@ -910,6 +910,7 @@ fun EditorScreen(
             voicedCount = voicedCount,
             hasVideo = !project?.videoPath.isNullOrBlank(),
             blurEnabled = blurSettings.enabled,
+            isMuted = isMuted,
             onDismiss = { showExportSheet = false },
             onExportVideo = {
                 showExportSheet = false

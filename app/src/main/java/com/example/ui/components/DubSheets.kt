@@ -1565,6 +1565,7 @@ fun ExportSheet(
     voicedCount: Int,
     hasVideo: Boolean,
     blurEnabled: Boolean,
+    isMuted: Boolean = false,
     onDismiss: () -> Unit,
     onExportVideo: () -> Unit,
     onExportSrt: () -> Unit,
@@ -1659,7 +1660,8 @@ fun ExportSheet(
                             text = when {
                                 !hasVideo -> "This project has no video file"
                                 voicedCount == 0 -> "Generate the AI voices first (Edge TTS Dub)"
-                                else -> "AI voice replaces the original audio · សំឡេង AI ជំនួសសំឡេងដើម"
+                                isMuted -> "Muted: AI voice only · សំឡេង AI សុទ្ធ (បិទសំឡេងដើម)"
+                                else -> "Mixes original audio (10% during speech) + AI voice · បញ្ចូលសំឡេងដើម (10% ពេលនិយាយ) + AI"
                             },
                             color = Color.White.copy(alpha = 0.8f),
                             fontSize = 12.sp

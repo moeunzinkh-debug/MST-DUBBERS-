@@ -22,6 +22,7 @@ import com.example.data.db.AppDatabase
 import com.example.data.db.ProjectEntity
 import com.example.data.db.ProjectWithStats
 import com.example.data.db.SegmentEntity
+import com.example.media.AudioClipDecoder
 import com.example.media.BlurRegion
 import com.example.media.BlurSettings
 import com.example.media.BlurStrength
@@ -857,11 +858,28 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
                 val workDir = File(app.cacheDir, "export").apply { mkdirs() }
                 val baseName = MediaSaver.safeFileName("${project.name}_dub_${timestamp()}")
                 val wavFile = File(workDir, if (kind == ExportKind.AUDIO) "$baseName.wav" else "dub_track.wav")
+
+                val effectiveBgVolume = if (_isMuted.value) 0f else settings.value.originalVolume
+                val dubVol = settings.value.dubVolume
+                val bgAudio = if (kind == ExportKind.VIDEO && effectiveBgVolume > 0f && videoFile != null && videoFile.exists()) {
+                    withContext(Dispatchers.IO) {
+                        try {
+                            AudioClipDecoder.decodeToMono(videoFile)
+                        } catch (t: Throwable) {
+                            null
+                        }
+                    }
+                } else null
+
                 val track = withContext(Dispatchers.IO) {
                     DubTrackRenderer.render(
                         clips = clips,
                         durationSec = durationSec,
                         output = wavFile,
+                        backgroundAudio = bgAudio,
+                        backgroundVolume = effectiveBgVolume,
+                        duckingFactor = 0.10f,
+                        dubVolume = dubVol,
                         onClipDone = { done, total ->
                             _exportState.value = ExportUiState.Running(
                                 kind, ExportStage.BUILDING_VOICE_TRACK, done.toFloat() / total.coerceAtLeast(1)
