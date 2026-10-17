@@ -15,7 +15,7 @@ class TranslationClient(
     private val geminiKeyProvider: () -> String,
     private val sealionKeyProvider: () -> String,
     private val sealionModelProvider: () -> String = { "aisingapore/Qwen-SEA-LION-v4.5-27B-IT" },
-    private val sealionUrlProvider: () -> String = { "https://api.together.xyz/v1/chat/completions" },
+    private val sealionUrlProvider: () -> String = { "https://api.sea-lion.ai/v1/" },
     private val customConfigProvider: () -> Quadruple<String, String, String, String>, // name, url, key, model
     private val geminiModelProvider: () -> String = { GeminiModels.DEFAULT }
 ) {
@@ -112,7 +112,7 @@ class TranslationClient(
         }
 
         val model = sealionModelProvider().trim().ifBlank { "aisingapore/Qwen-SEA-LION-v4.5-27B-IT" }
-        val rawUrl = sealionUrlProvider().trim().ifBlank { "https://api.together.xyz/v1/chat/completions" }
+        val rawUrl = sealionUrlProvider().trim().ifBlank { "https://api.sea-lion.ai/v1/" }
         val endpoint = if (rawUrl.endsWith("/chat/completions")) rawUrl else "${rawUrl.removeSuffix("/")}/chat/completions"
 
         return executeOpenAiChatCompletion(

@@ -329,7 +329,7 @@ fun SettingsSheet(
                     value = sealionUrlText,
                     onValueChange = { sealionUrlText = it },
                     label = { Text("SEA-LION Endpoint URL") },
-                    placeholder = { Text("https://api.together.xyz/v1/chat/completions") },
+                    placeholder = { Text("https://api.sea-lion.ai/v1/") },
                     modifier = Modifier.fillMaxWidth(),
                     colors = defaultTextFieldColors(),
                     shape = RoundedCornerShape(10.dp)

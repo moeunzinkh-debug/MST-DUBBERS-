@@ -21,7 +21,7 @@ data class AppSettings(
     val groqApiKey: String = "",
     val sealionApiKey: String = "",
     val sealionModel: String = "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
-    val sealionUrl: String = "https://api.together.xyz/v1/chat/completions",
+    val sealionUrl: String = "https://api.sea-lion.ai/v1/",
     val transcriptionEngine: String = "gemini", // "gemini" or "groq_whisper"
     val translationEngine: String = "gemini", // "gemini", "sealion", or "custom"
     val customApiName: String = "",
@@ -133,7 +133,7 @@ class SettingsRepository(private val context: Context) {
             groqApiKey = prefs.getString("groq_api_key", "") ?: "",
             sealionApiKey = prefs.getString("sealion_api_key", "") ?: "",
             sealionModel = prefs.getString("sealion_model", "aisingapore/Qwen-SEA-LION-v4.5-27B-IT") ?: "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
-            sealionUrl = prefs.getString("sealion_url", "https://api.together.xyz/v1/chat/completions") ?: "https://api.together.xyz/v1/chat/completions",
+            sealionUrl = prefs.getString("sealion_url", "https://api.sea-lion.ai/v1/") ?: "https://api.sea-lion.ai/v1/",
             transcriptionEngine = prefs.getString("transcription_engine", "gemini") ?: "gemini",
             translationEngine = prefs.getString("translation_engine", "gemini") ?: "gemini",
             customApiName = prefs.getString("custom_api_name", "") ?: "",
