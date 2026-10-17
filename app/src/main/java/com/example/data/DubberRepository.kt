@@ -357,14 +357,31 @@ class DubberRepository(
             if (oldFile.exists()) oldFile.delete()
         }
 
-        // Auto-Snap: if generated voice is shorter than the subtitle slot, align start time
-        // so the voice finishes cleanly at seg.end (when the character actually speaks in the video).
+        // Audio VAD Snap: detect exact moment dialogue is spoken in the original video audio track.
+        val project = projectDao.getProjectById(seg.projectId)
+        val videoFile = project?.videoPath?.takeIf { it.isNotBlank() }?.let { File(it) }
+        val vadOnset = if (videoFile != null && videoFile.exists()) {
+            try {
+                com.example.media.AudioVadDetector.detectSpeechOnset(
+                    mediaFile = videoFile,
+                    startSec = seg.start,
+                    endSec = seg.end,
+                    ttsDurationSec = durationSec
+                )
+            } catch (e: Exception) {
+                null
+            }
+        } else null
+
+        // Auto-Snap: use detected VAD speech onset, or fallback to aligning end if shorter than slot.
         val currentSlot = seg.end - seg.start
-        val newStart = if (durationSec > 0.0 && durationSec < currentSlot) {
-            val aligned = Math.round((seg.end - durationSec) * 10.0) / 10.0
-            aligned.coerceAtLeast(seg.start)
-        } else {
-            seg.start
+        val newStart = when {
+            vadOnset != null -> vadOnset
+            durationSec > 0.0 && durationSec < currentSlot -> {
+                val aligned = Math.round((seg.end - durationSec) * 10.0) / 10.0
+                aligned.coerceAtLeast(seg.start)
+            }
+            else -> seg.start
         }
 
         val updated = seg.copy(
