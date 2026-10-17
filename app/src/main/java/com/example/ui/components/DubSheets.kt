@@ -324,6 +324,35 @@ fun SettingsSheet(
                     colors = defaultTextFieldColors(),
                     shape = RoundedCornerShape(10.dp)
                 )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Popular Models (ចុចដើម្បីជ្រើសរើស):", color = DarkMuted, fontSize = 11.sp)
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "Qwen-SEA-LION-v4.5-27B-IT" to "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
+                        "Llama-v3-70B-IT" to "aisingapore/Llama-SEA-LION-v3-70B-IT"
+                    ).forEach { (label, modelId) ->
+                        val isSelected = sealionModelText == modelId
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSelected) SkyAccent.copy(alpha = 0.2f) else DarkCard)
+                                .border(1.dp, if (isSelected) SkyAccent else DarkLine, RoundedCornerShape(8.dp))
+                                .clickable { sealionModelText = modelId }
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (isSelected) SkyAccent else DarkFg,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
                 Spacer(modifier = Modifier.height(6.dp))
                 OutlinedTextField(
                     value = sealionUrlText,

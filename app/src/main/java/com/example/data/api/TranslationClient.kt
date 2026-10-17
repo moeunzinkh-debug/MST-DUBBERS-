@@ -204,7 +204,10 @@ class TranslationClient(
         val response = client.newCall(reqBuilder.build()).execute()
         val responseBody = response.body?.string() ?: ""
         if (!response.isSuccessful) {
-            throw IOException("Translation API error (${modelName}) ${response.code}: $responseBody")
+            val hint = if (responseBody.contains("Connection error", ignoreCase = true) || response.code == 500) {
+                "\n\nHint: Model '$modelName' may be offline on the server. Please switch to 'aisingapore/Qwen-SEA-LION-v4.5-27B-IT' in Settings."
+            } else ""
+            throw IOException("Translation API error (${modelName}) ${response.code}: $responseBody$hint")
         }
 
         val root = JSONObject(responseBody)
