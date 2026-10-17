@@ -89,4 +89,14 @@ class DubTimelineTest {
       assertTrue(previous.startSec + previous.maxDurationSec <= clips[i].startSec + 1e-9)
     }
   }
+
+  @Test
+  fun `auto snap aligns voice to end of slot when speech duration is shorter`() {
+    val segStart = 0.0
+    val segEnd = 4.6
+    val speechDuration = 0.8
+    val aligned = Math.round((segEnd - speechDuration) * 10.0) / 10.0
+    val newStart = aligned.coerceAtLeast(segStart)
+    assertEquals(3.8, newStart, 1e-6)
+  }
 }

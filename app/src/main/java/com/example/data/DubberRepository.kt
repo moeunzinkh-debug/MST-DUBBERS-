@@ -357,7 +357,18 @@ class DubberRepository(
             if (oldFile.exists()) oldFile.delete()
         }
 
+        // Auto-Snap: if generated voice is shorter than the subtitle slot, align start time
+        // so the voice finishes cleanly at seg.end (when the character actually speaks in the video).
+        val currentSlot = seg.end - seg.start
+        val newStart = if (durationSec > 0.0 && durationSec < currentSlot) {
+            val aligned = Math.round((seg.end - durationSec) * 10.0) / 10.0
+            aligned.coerceAtLeast(seg.start)
+        } else {
+            seg.start
+        }
+
         val updated = seg.copy(
+            start = newStart,
             audioPath = audioFile.absolutePath,
             audioDuration = durationSec
         )
