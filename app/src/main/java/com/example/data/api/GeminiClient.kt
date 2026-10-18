@@ -10,7 +10,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.FileInputStream
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -38,77 +37,19 @@ class GeminiClient(
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    private val transcriptionClient by lazy {
+        TranscriptionClient(
+            geminiKeyProvider = apiKeyProvider,
+            groqKeyProvider = { "" },
+            geminiModelProvider = modelProvider
+        )
+    }
+
+    /** Uses the shared large-file upload path for Gemini video transcription. */
     suspend fun transcribeVideo(
         videoFile: File,
         mimeType: String = "video/mp4"
-    ): List<TranscribeItem> = withContext(Dispatchers.IO) {
-        val apiKey = apiKeyProvider().trim()
-        if (apiKey.isEmpty()) {
-            throw IOException("Gemini API key is required. Please add your key in Settings.")
-        }
-
-        // Check file size (keep within 19MB for direct inlineData payload)
-        if (videoFile.length() > 19 * 1024 * 1024) {
-            throw IOException("Video file is larger than 19MB. Please import a subtitle file (.srt/.vtt) or use a smaller clip.")
-        }
-
-        val base64Video = FileInputStream(videoFile).use { fis ->
-            val bytes = fis.readBytes()
-            Base64.encodeToString(bytes, Base64.NO_WRAP)
-        }
-
-        val requestJson = JSONObject().apply {
-            val contentsArray = JSONArray()
-            val contentObj = JSONObject()
-            val partsArray = JSONArray()
-
-            // Video inline data
-            val videoPart = JSONObject().apply {
-                val inlineData = JSONObject().apply {
-                    put("mimeType", mimeType)
-                    put("data", base64Video)
-                }
-                put("inlineData", inlineData)
-            }
-            partsArray.put(videoPart)
-
-            // Prompt
-            val textPart = JSONObject().apply {
-                put("text", "Transcribe all spoken dialogue in this video into subtitle segments. " +
-                        "Return ONLY a JSON array of objects: [{\"start\": seconds(number), \"end\": seconds(number), \"text\": string, \"gender\": \"female\"|\"male\"}]. " +
-                        "Keep each segment between 1 and 7 seconds, in the original spoken language, with accurate timestamps. gender = the apparent gender of the speaker.")
-            }
-            partsArray.put(textPart)
-
-            contentObj.put("role", "user")
-            contentObj.put("parts", partsArray)
-            contentsArray.put(contentObj)
-            put("contents", contentsArray)
-
-            // No temperature/topP/topK: Gemini 3.6+ ignores them (future models reject them).
-            val genConfig = JSONObject().apply {
-                put("responseMimeType", "application/json")
-            }
-            put("generationConfig", genConfig)
-        }
-
-        val model = GeminiModels.resolve(modelProvider())
-        val url = GeminiModels.generateContentUrl(model, apiKey)
-        val request = Request.Builder()
-            .url(url)
-            .post(requestJson.toString().toRequestBody(jsonMediaType))
-            .build()
-
-        val response = client.newCall(request).execute()
-        val responseBody = response.body?.string() ?: ""
-        if (!response.isSuccessful) {
-            val errorMsg = parseErrorMessage(responseBody) ?: "Gemini API error ($model) ${response.code}"
-            throw IOException(errorMsg)
-        }
-
-        val textContent = parseCandidateText(responseBody)
-        parseTranscribeItems(textContent)
-    }
+    ): List<TranscribeItem> = transcriptionClient.transcribe(videoFile, mimeType, engine = "gemini")
 
     suspend fun translateSegments(
         segments: List<Triple<Long, Double, String>>, // id, duration, text
@@ -274,33 +215,6 @@ class GeminiClient(
         } catch (e: Exception) {
             null
         }
-    }
-
-    private fun parseTranscribeItems(jsonText: String): List<TranscribeItem> {
-        val trimmed = jsonText.trim()
-        val arrayString = when {
-            trimmed.startsWith("[") -> trimmed
-            trimmed.contains("[") && trimmed.contains("]") -> {
-                val start = trimmed.indexOf("[")
-                val end = trimmed.lastIndexOf("]")
-                trimmed.substring(start, end + 1)
-            }
-            else -> return emptyList()
-        }
-
-        val jsonArray = JSONArray(arrayString)
-        val list = mutableListOf<TranscribeItem>()
-        for (i in 0 until jsonArray.length()) {
-            val obj = jsonArray.getJSONObject(i)
-            val start = obj.optDouble("start", 0.0)
-            val end = obj.optDouble("end", start + 2.0)
-            val text = obj.optString("text", "").trim()
-            val gender = if (obj.optString("gender", "female").equals("male", ignoreCase = true)) "male" else "female"
-            if (text.isNotEmpty()) {
-                list.add(TranscribeItem(start = start, end = maxOf(end, start + 0.5), text = text, gender = gender))
-            }
-        }
-        return list.sortedBy { it.start }
     }
 
     private fun parseTranslateItems(jsonText: String): List<TranslateItem> {
