@@ -75,7 +75,9 @@ object SlotFitter {
         if (stretched.isNotEmpty()) {
             val count = min(stretched.size, slotSamples)
             if (count < stretched.size) {
-                DubTrackRenderer.fadeOut(stretched, count, (CUT_FADE_SEC * outputSampleRate).toInt())
+                DubTrackRenderer.fadeOut(
+                    stretched, count, (DubTrackRenderer.CUT_FADE_SEC * outputSampleRate).toInt()
+                )
             }
             System.arraycopy(stretched, 0, out, 0, count)
         }
