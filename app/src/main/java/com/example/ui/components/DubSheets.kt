@@ -1114,7 +1114,8 @@ fun EditSegmentSheet(
             // Shift subsequent lines checkbox
             Row(
                 modifier = Modifier
-                           .clip(RoundedCornerShape(8.dp))
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
                     .background(DarkCard)
                     .clickable { shiftSubsequent = !shiftSubsequent }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
@@ -1864,14 +1865,6 @@ fun ExportSheet(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
-        }
-    }
-}
-ht(24.dp))
-        }
-    }
-}
-fier = Modifier.height(24.dp))
         }
     }
 }
