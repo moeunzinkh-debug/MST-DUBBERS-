@@ -5,108 +5,78 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 /**
  * Audio Voice Activity Detection (VAD) & Speech Onset Detector.
  *
- * Scans the original video's audio track around a subtitle segment to detect
- * the exact moment (timestamp in seconds) when the actor/speaker actually
- * begins speaking dialogue.
+ * Scans the original video's audio track around a subtitle segment to detect the exact
+ * moment (timestamp in seconds) when the actor/speaker actually begins speaking, so the
+ * generated dub can be placed on that waveform onset instead of the subtitle start.
+ *
+ * The waveform analysis itself lives in [SpeechOnsetFinder]; this object only decodes the
+ * slice. Two past bugs made the dub start *before* the actor:
+ *  1. The decoded PCM was assumed to start exactly at the requested seek time, but
+ *     [MediaExtractor.SEEK_TO_PREVIOUS_SYNC] lands on an earlier sync sample (and AAC adds
+ *     decoder priming), so every onset was shifted early. The decoder's
+ *     `presentationTimeUs` is now used as the time anchor, and samples before the search
+ *     window are trimmed.
+ *  2. The decode loop gave up after 1.5s of wall-clock time regardless of progress, so on
+ *     slower devices it could return a truncated/empty slice. It now stops only after
+ *     [STALL_TIMEOUT_MS] without any decoder progress.
  */
 object AudioVadDetector {
 
-    private const val FRAME_MS = 25L // 25ms per analysis window
     private const val DEQUEUE_TIMEOUT_US = 5_000L
+
+    /** Give up when the decoder makes no progress for this long (see [AudioClipDecoder]). */
+    private const val STALL_TIMEOUT_MS = 8_000L
+
+    /**
+     * The slice is decoded slightly before the subtitle start: a previous detection (or a
+     * subtitle edited by hand) may have moved the start a little past the true onset, and
+     * re-generating a voice must still be able to find the speech again.
+     */
+    private const val LEAD_IN_SEC = 0.35
+
+    /** A decoded slice of mono PCM plus the timeline time (seconds) of its first sample. */
+    private class Slice(val samples: ShortArray, val sampleRate: Int, val startSec: Double)
 
     /**
      * Detects speech onset (in seconds) within [startSec] and [endSec] in [mediaFile].
      *
+     * Note there is deliberately no "fit the TTS clip inside the slot" adjustment here any
+     * more: the previous version moved a detected onset back to `endSec - ttsDuration`
+     * whenever the dub was longer than the slot — which is most lines — throwing the
+     * detected onset away and starting the dub at the subtitle start, ahead of the actor.
+     * Overrun is handled downstream instead: [DubTimeline] speeds the clip up (Auto-Fit)
+     * and cuts it when the next line starts.
+     *
      * @param mediaFile the original video or audio file.
      * @param startSec beginning of subtitle slot (seconds).
      * @param endSec end of subtitle slot (seconds).
-     * @param ttsDurationSec duration of the generated TTS dub audio (seconds).
      * @return the detected onset timestamp in seconds, or null if no clear speech onset found.
      */
     fun detectSpeechOnset(
         mediaFile: File,
         startSec: Double,
-        endSec: Double,
-        ttsDurationSec: Double = 0.0
+        endSec: Double
     ): Double? {
         if (!mediaFile.exists() || endSec <= startSec) return null
 
-        val pcm = decodeAudioSlice(mediaFile, startSec, endSec) ?: return null
-        if (pcm.samples.isEmpty() || pcm.sampleRate <= 0) return null
+        val windowStart = (startSec - LEAD_IN_SEC).coerceAtLeast(0.0)
+        val slice = decodeAudioSlice(mediaFile, windowStart, endSec) ?: return null
 
-        val sampleRate = pcm.sampleRate
-        val frameSamples = ((FRAME_MS * sampleRate) / 1000).toInt().coerceAtLeast(100)
-        val numFrames = pcm.samples.size / frameSamples
-        if (numFrames < 4) return null
-
-        // Compute RMS energy for each 25ms frame
-        val frameEnergies = DoubleArray(numFrames)
-        for (f in 0 until numFrames) {
-            val offset = f * frameSamples
-            var sumSq = 0.0
-            for (i in 0 until frameSamples) {
-                val s = pcm.samples[offset + i].toDouble()
-                sumSq += s * s
-            }
-            frameEnergies[f] = sqrt(sumSq / frameSamples)
-        }
-
-        // Find baseline noise floor (approx 15th percentile)
-        val sortedEnergies = frameEnergies.clone().apply { sort() }
-        val noiseFloorIndex = (numFrames * 0.15).toInt().coerceIn(0, numFrames - 1)
-        val noiseFloor = sortedEnergies[noiseFloorIndex]
-        val peakEnergy = sortedEnergies.last()
-
-        // If dynamic range is very flat (almost complete silence or loud constant drone), no clear onset
-        if (peakEnergy < 200.0 || peakEnergy <= noiseFloor * 1.5) {
-            return null
-        }
-
-        // Speech threshold: at least 2.4x noise floor, or minimum audible speech level
-        val threshold = max(noiseFloor * 2.4, peakEnergy * 0.22).coerceAtLeast(250.0)
-
-        // Find first point where 3 consecutive frames exceed threshold (to filter out clicks/taps)
-        var speechFrame = -1
-        for (f in 0 until numFrames - 2) {
-            if (frameEnergies[f] >= threshold &&
-                frameEnergies[f + 1] >= threshold * 0.85 &&
-                frameEnergies[f + 2] >= threshold * 0.75
-            ) {
-                speechFrame = f
-                break
-            }
-        }
-
-        if (speechFrame < 0) return null
-
-        val onsetWithinSlice = (speechFrame * frameSamples).toDouble() / sampleRate
-        val detectedSec = startSec + onsetWithinSlice
-        val rounded = Math.round(detectedSec * 10.0) / 10.0
-
-        // Ensure detected onset gives enough room for speech before endSec
-        if (ttsDurationSec > 0.0 && rounded + ttsDurationSec > endSec + 0.4) {
-            // If onset is too late to fit the speech, snap so it ends cleanly at endSec
-            val adjusted = (endSec - ttsDurationSec).coerceAtLeast(startSec)
-            return Math.round(adjusted * 10.0) / 10.0
-        }
-
-        return rounded.coerceIn(startSec, endSec)
+        val onset = SpeechOnsetFinder.findOnsetSec(slice.samples, slice.sampleRate, slice.startSec)
+            ?: return null
+        return onset.coerceIn(windowStart, endSec)
     }
 
     /**
-     * Decodes a targeted slice of audio between [startSec] and [endSec] to mono 16-bit PCM.
+     * Decodes the audio between [windowStartSec] and [endSec] to mono 16-bit PCM, anchored
+     * to the decoder's presentation timestamps (not to the requested seek time).
      */
-    private fun decodeAudioSlice(file: File, startSec: Double, endSec: Double): PcmAudio? {
+    private fun decodeAudioSlice(file: File, windowStartSec: Double, endSec: Double): Slice? {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(file.absolutePath)
@@ -118,8 +88,10 @@ object AudioVadDetector {
             val inputFormat = extractor.getTrackFormat(trackIndex)
             val mime = inputFormat.getString(MediaFormat.KEY_MIME) ?: return null
 
-            val startUs = (startSec * 1_000_000).toLong().coerceAtLeast(0L)
-            val endUs = ((endSec + 0.3) * 1_000_000).toLong()
+            val startUs = (windowStartSec * 1_000_000).toLong().coerceAtLeast(0L)
+            val endUs = (endSec * 1_000_000).toLong()
+            // Lands on a sync sample at or *before* startUs; the first output buffer's
+            // presentationTimeUs below tells us where the PCM really starts.
             extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
 
             var sampleRate = if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
@@ -128,10 +100,12 @@ object AudioVadDetector {
             var channelCount = if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                 inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             } else 1
+            var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
 
             val codec = MediaCodec.createDecoderByType(mime)
             val output = ShortArrayBuilder(32 * 1024)
             val info = MediaCodec.BufferInfo()
+            var firstPtsSec: Double? = null
 
             try {
                 codec.configure(inputFormat, null, null, 0)
@@ -139,11 +113,10 @@ object AudioVadDetector {
 
                 var inputDone = false
                 var outputDone = false
-                var samplesRead = 0
-                val maxSamples = (((endSec - startSec + 1.0) * sampleRate)).toInt().coerceAtLeast(10_000)
+                val maxSamples = (((endSec - windowStartSec + 1.0) * sampleRate)).toInt().coerceAtLeast(10_000)
+                var lastProgressAt = System.currentTimeMillis()
 
-                val startTime = System.currentTimeMillis()
-                while (!outputDone && System.currentTimeMillis() - startTime < 1_500L && samplesRead < maxSamples) {
+                while (!outputDone && output.size < maxSamples) {
                     if (!inputDone) {
                         val inIndex = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                         if (inIndex >= 0) {
@@ -158,6 +131,7 @@ object AudioVadDetector {
                                 codec.queueInputBuffer(inIndex, 0, size, sampleTime, 0)
                                 extractor.advance()
                             }
+                            lastProgressAt = System.currentTimeMillis()
                         }
                     }
 
@@ -167,14 +141,20 @@ object AudioVadDetector {
                             if (info.size > 0) {
                                 val outBuffer = codec.getOutputBuffer(outIndex)
                                 if (outBuffer != null) {
+                                    if (firstPtsSec == null) {
+                                        firstPtsSec = if (info.presentationTimeUs >= 0) {
+                                            info.presentationTimeUs / 1_000_000.0
+                                        } else {
+                                            windowStartSec
+                                        }
+                                    }
                                     outBuffer.position(info.offset)
                                     outBuffer.limit(info.offset + info.size)
-                                    val decoded = decodeBufferToMono(outBuffer, channelCount)
-                                    output.addAll(decoded)
-                                    samplesRead += decoded.size
+                                    AudioClipDecoder.appendAsMono(outBuffer, pcmEncoding, channelCount, output)
                                 }
                             }
                             codec.releaseOutputBuffer(outIndex, false)
+                            lastProgressAt = System.currentTimeMillis()
                             if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                                 outputDone = true
                             }
@@ -187,34 +167,36 @@ object AudioVadDetector {
                             if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                                 channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                             }
+                            if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                                pcmEncoding = format.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                            }
                         }
                     }
+
+                    if (System.currentTimeMillis() - lastProgressAt > STALL_TIMEOUT_MS) break
                 }
             } finally {
                 try { codec.stop() } catch (_: Exception) {}
                 codec.release()
             }
 
-            return PcmAudio(output.toShortArray(), sampleRate)
+            val samples = output.toShortArray()
+            if (samples.isEmpty() || sampleRate <= 0) return null
+
+            // Trim whatever the sync-seek/priming decoded from before the search window, so
+            // the previous line's speech can never be mistaken for this line's onset.
+            val rawStartSec = firstPtsSec ?: windowStartSec
+            val dropSamples = ((windowStartSec - rawStartSec) * sampleRate).roundToInt()
+                .coerceIn(0, samples.size)
+            return if (dropSamples > 0) {
+                Slice(samples.copyOfRange(dropSamples, samples.size), sampleRate, windowStartSec)
+            } else {
+                Slice(samples, sampleRate, rawStartSec)
+            }
         } catch (e: Exception) {
             return null
         } finally {
             extractor.release()
         }
-    }
-
-    private fun decodeBufferToMono(buffer: ByteBuffer, channelCount: Int): ShortArray {
-        val channels = channelCount.coerceAtLeast(1)
-        val shorts = buffer.slice().order(ByteOrder.nativeOrder()).asShortBuffer()
-        val frames = shorts.remaining() / channels
-        val mono = ShortArray(frames)
-        for (frame in 0 until frames) {
-            var sum = 0
-            for (c in 0 until channels) {
-                sum += shorts.get(frame * channels + c)
-            }
-            mono[frame] = (sum / channels).toShort()
-        }
-        return mono
     }
 }

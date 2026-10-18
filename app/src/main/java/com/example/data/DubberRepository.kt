@@ -376,24 +376,20 @@ class DubberRepository(
                 com.example.media.AudioVadDetector.detectSpeechOnset(
                     mediaFile = videoFile,
                     startSec = seg.start,
-                    endSec = seg.end,
-                    ttsDurationSec = durationSec
+                    endSec = seg.end
                 )
             } catch (e: Exception) {
                 null
             }
         } else null
 
-        // Auto-Snap: use detected VAD speech onset, or fallback to aligning end if shorter than slot.
-        val currentSlot = seg.end - seg.start
-        val newStart = when {
-            vadOnset != null -> vadOnset
-            durationSec > 0.0 && durationSec < currentSlot -> {
-                val aligned = Math.round((seg.end - durationSec) * 10.0) / 10.0
-                aligned.coerceAtLeast(seg.start)
-            }
-            else -> seg.start
-        }
+        // Auto-Snap: start the dub exactly where the actor starts speaking in the original
+        // waveform. When no clear onset is found, keep the subtitle start unchanged — the
+        // previous fallback aligned the clip's *end* to the slot end, which guessed that
+        // speech fills the whole slot and routinely placed the dub ahead of the actor.
+        // A dub longer than its slot is fine: DubTimeline's Auto-Fit speeds it up and cuts
+        // it when the next line starts.
+        val newStart = vadOnset?.coerceIn(seg.start - 0.35, seg.end) ?: seg.start
 
         val updated = seg.copy(
             start = newStart,
