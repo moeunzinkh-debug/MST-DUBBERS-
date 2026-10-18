@@ -45,7 +45,7 @@ class GeminiClient(
         )
     }
 
-    /** Uses the shared large-file upload path for Gemini video transcription. */
+    /** Uses the shared audio-first transcription path for Gemini video transcription. */
     suspend fun transcribeVideo(
         videoFile: File,
         mimeType: String = "video/mp4"

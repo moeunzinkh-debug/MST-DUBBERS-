@@ -178,7 +178,7 @@ fun SettingsSheet(
                 text = if (transcriptionEngine == "groq_whisper") {
                     "Large videos use extracted audio with Groq's 25 MB API limit."
                 } else {
-                    "Gemini supports large video uploads up to 2 GB."
+                    "Gemini transcribes extracted audio for faster results (up to 2 GB)."
                 },
                 color = DarkMuted,
                 fontSize = 11.sp,

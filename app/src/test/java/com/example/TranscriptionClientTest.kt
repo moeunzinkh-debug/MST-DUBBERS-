@@ -2,6 +2,7 @@ package com.example
 
 import com.example.data.api.TranscribeItem
 import com.example.data.api.TranscriptionClient
+import android.util.Base64
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.Headers
@@ -123,7 +124,8 @@ class TranscriptionClientTest {
             geminiKeyProvider = { "test-gemini-key" },
             groqKeyProvider = { "test-groq-key" },
             geminiApiBaseUrl = "https://gemini.test/",
-            client = fakeHttpClient
+            client = fakeHttpClient,
+            audioTrackExtractor = { it }
         )
 
         val items = transcriber.transcribe(videoFile, "video/mp4", "gemini")
@@ -139,5 +141,71 @@ class TranscriptionClientTest {
             seenRequests.map { it.url.encodedPath }
         )
         assertTrue(TranscriptionClient.MAX_GEMINI_FILE_SIZE_BYTES > largeVideoSize)
+    }
+
+    @Test
+    fun `Gemini receives the extracted audio track instead of the video`() = runBlocking {
+        val videoFile = temporaryFolder.newFile("video.mp4").apply { writeText("video frames") }
+        val audioFile = temporaryFolder.newFile("audio.m4a").apply { writeText("audio track") }
+        var requestCount = 0
+
+        val fakeHttpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                requestCount++
+                assertEquals("/v1beta/models/gemini-3.8-flash:generateContent", request.url.encodedPath)
+
+                val buffer = Buffer()
+                request.body!!.writeTo(buffer)
+                val requestJson = JSONObject(buffer.readUtf8())
+                val mediaPart = requestJson
+                    .getJSONArray("contents")
+                    .getJSONObject(0)
+                    .getJSONArray("parts")
+                    .getJSONObject(0)
+                assertFalse("Gemini should receive audio, not the original video", mediaPart.has("fileData"))
+                val inlineAudio = mediaPart.getJSONObject("inlineData")
+                assertEquals("audio/mp4", inlineAudio.getString("mimeType"))
+                assertEquals(
+                    "audio track",
+                    String(Base64.decode(inlineAudio.getString("data"), Base64.DEFAULT), Charsets.UTF_8)
+                )
+
+                val transcriptText = "[{\"start\":0,\"end\":2,\"text\":\"Hello\",\"gender\":\"female\"}]"
+                val responseBody = JSONObject().put(
+                    "candidates",
+                    JSONArray().put(
+                        JSONObject().put(
+                            "content",
+                            JSONObject().put(
+                                "parts",
+                                JSONArray().put(JSONObject().put("text", transcriptText))
+                            )
+                        )
+                    )
+                ).toString()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(responseBody.toResponseBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val transcriber = TranscriptionClient(
+            geminiKeyProvider = { "test-gemini-key" },
+            groqKeyProvider = { "test-groq-key" },
+            client = fakeHttpClient,
+            audioTrackExtractor = { audioFile }
+        )
+
+        assertEquals(
+            listOf(TranscribeItem(0.0, 2.0, "Hello", "female")),
+            transcriber.transcribe(videoFile, "video/mp4", "gemini")
+        )
+        assertEquals(1, requestCount)
+        assertFalse("Temporary extracted audio should be removed", audioFile.exists())
     }
 }

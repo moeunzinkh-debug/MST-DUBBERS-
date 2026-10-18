@@ -9,12 +9,12 @@ import java.io.IOException
 import java.nio.ByteBuffer
 
 /**
- * Copies a video's compressed audio track into a small audio-only M4A file for Groq Whisper.
+ * Copies a video's compressed audio track into an audio-only M4A file for transcription.
  *
- * This avoids uploading the video's high-bitrate picture stream to an audio transcription API.
- * MediaExtractor/MediaMuxer copy encoded samples without decoding or re-encoding them.
+ * This avoids uploading high-bitrate video frames to an audio transcription API. MediaExtractor
+ * and MediaMuxer copy encoded samples without decoding or re-encoding them.
  */
-internal object GroqAudioExtractor {
+internal object AudioTrackExtractor {
     private const val DEFAULT_SAMPLE_BUFFER_BYTES = 1024 * 1024
     private const val MAX_SAMPLE_BUFFER_BYTES = 16 * 1024 * 1024
 

@@ -29,16 +29,17 @@ private fun buildDefaultTranscriptionHttpClient(): OkHttpClient = OkHttpClient.B
 /**
  * Transcribes local videos using Gemini or Groq Whisper.
  *
- * Gemini's inline-data endpoint has a small request-body limit, so larger videos are uploaded with
- * Gemini's resumable Files API and passed to generateContent by file URI. The upload streams from
- * disk; it does not load a hundreds-of-megabytes video into memory.
+ * Gemini receives the video's compressed audio track instead of its high-bitrate video frames.
+ * Small audio tracks are sent inline; larger ones use Gemini's resumable Files API and stream from
+ * disk, avoiding loading hundreds of megabytes into memory.
  */
 class TranscriptionClient(
     private val geminiKeyProvider: () -> String,
     private val groqKeyProvider: () -> String,
     private val geminiModelProvider: () -> String = { GeminiModels.DEFAULT },
     geminiApiBaseUrl: String = DEFAULT_GEMINI_API_ROOT,
-    private val client: OkHttpClient = buildDefaultTranscriptionHttpClient()
+    private val client: OkHttpClient = buildDefaultTranscriptionHttpClient(),
+    private val audioTrackExtractor: (File) -> File = { AudioTrackExtractor.extractAudioTrack(it) }
 ) {
     private val geminiApiRoot: HttpUrl = (geminiApiBaseUrl.trimEnd('/') + "/").toHttpUrl()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -71,54 +72,77 @@ class TranscriptionClient(
             throw IOException("Gemini API key is required. Please add it in Settings.")
         }
 
-        val size = videoFile.length()
-        if (size > MAX_GEMINI_FILE_SIZE_BYTES) {
-            throw IOException("Gemini supports video files up to 2 GB. This video is too large to transcribe.")
-        }
-
-        val normalizedMimeType = mimeType.trim().ifBlank { "video/mp4" }
-        val uploadedFile = if (size > MAX_INLINE_VIDEO_BYTES) {
-            uploadGeminiFile(apiKey, videoFile, normalizedMimeType)
-        } else {
-            null
-        }
-
+        // Gemini can transcribe audio directly. Sending only the compressed audio track greatly
+        // reduces upload size and avoids spending time uploading high-bitrate video frames.
+        val media = extractAudioForGemini(videoFile, mimeType)
         try {
-            if (uploadedFile != null) {
-                waitForGeminiFile(apiKey, uploadedFile)
+            val size = media.file.length()
+            if (size <= 0L) throw IOException("No audio data was found in this video")
+            if (size > MAX_GEMINI_FILE_SIZE_BYTES) {
+                throw IOException("Gemini supports media files up to 2 GB. This transcription file is too large.")
             }
 
-            val model = GeminiModels.resolve(geminiModelProvider())
-            val requestJson = buildTranscriptionRequest(videoFile, normalizedMimeType, uploadedFile)
-            val request = Request.Builder()
-                .url(geminiUrl("v1beta/models/$model:generateContent", apiKey))
-                .post(requestJson.toString().toRequestBody(jsonMediaType))
-                .build()
+            val uploadedFile = if (size > MAX_INLINE_MEDIA_BYTES) {
+                uploadGeminiFile(apiKey, media.file, media.mimeType)
+            } else {
+                null
+            }
 
-            return client.newCall(request).execute().use { response ->
-                val responseBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    throw IOException(
-                        "Gemini error ($model) ${response.code}: ${apiErrorMessage(responseBody) ?: responseBody}"
-                    )
+            try {
+                if (uploadedFile != null) {
+                    waitForGeminiFile(apiKey, uploadedFile)
                 }
-                parseTranscribeJson(extractCandidateText(responseBody))
+
+                val model = GeminiModels.resolve(geminiModelProvider())
+                val requestJson = buildTranscriptionRequest(media.file, media.mimeType, uploadedFile)
+                val request = Request.Builder()
+                    .url(geminiUrl("v1beta/models/$model:generateContent", apiKey))
+                    .post(requestJson.toString().toRequestBody(jsonMediaType))
+                    .build()
+
+                return client.newCall(request).execute().use { response ->
+                    val responseBody = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        throw IOException(
+                            "Gemini error ($model) ${response.code}: ${apiErrorMessage(responseBody) ?: responseBody}"
+                        )
+                    }
+                    parseTranscribeJson(extractCandidateText(responseBody))
+                }
+            } finally {
+                // Uploaded Files API objects count against the user's storage quota. Remove them as
+                // soon as transcription finishes; Gemini also expires files automatically after 48 hours.
+                if (uploadedFile != null) {
+                    deleteGeminiFile(apiKey, uploadedFile.name)
+                }
             }
         } finally {
-            // Uploaded Files API objects count against the user's storage quota. Remove them as soon
-            // as transcription finishes; Gemini also expires files automatically after 48 hours.
-            if (uploadedFile != null) {
-                deleteGeminiFile(apiKey, uploadedFile.name)
+            media.temporaryFile?.delete()
+        }
+    }
+
+    private fun extractAudioForGemini(videoFile: File, videoMimeType: String): TranscriptionMediaSource {
+        val originalMimeType = videoMimeType.trim().ifBlank { "video/mp4" }
+        return try {
+            val audioFile = audioTrackExtractor(videoFile)
+            if (audioFile == videoFile) {
+                TranscriptionMediaSource(videoFile, originalMimeType)
+            } else {
+                TranscriptionMediaSource(audioFile, "audio/mp4", temporaryFile = audioFile)
             }
+        } catch (_: Exception) {
+            // Keep transcription working for containers/codecs Android cannot remux; Gemini can
+            // still process the original video through the Files API.
+            TranscriptionMediaSource(videoFile, originalMimeType)
         }
     }
 
     private fun buildTranscriptionRequest(
-        videoFile: File,
+        mediaFile: File,
         mimeType: String,
         uploadedFile: UploadedGeminiFile?
     ): JSONObject {
-        val videoPart = if (uploadedFile != null) {
+        val mediaPart = if (uploadedFile != null) {
             JSONObject().apply {
                 put("fileData", JSONObject().apply {
                     put("mimeType", mimeType)
@@ -126,19 +150,19 @@ class TranscriptionClient(
                 })
             }
         } else {
-            val base64Video = videoFile.inputStream().use { stream ->
+            val base64Media = mediaFile.inputStream().use { stream ->
                 Base64.encodeToString(stream.readBytes(), Base64.NO_WRAP)
             }
             JSONObject().apply {
                 put("inlineData", JSONObject().apply {
                     put("mimeType", mimeType)
-                    put("data", base64Video)
+                    put("data", base64Media)
                 })
             }
         }
 
         val parts = JSONArray()
-            .put(videoPart)
+            .put(mediaPart)
             .put(JSONObject().put("text", TRANSCRIPTION_PROMPT))
 
         return JSONObject().apply {
@@ -150,20 +174,20 @@ class TranscriptionClient(
         }
     }
 
-    /** Starts a resumable Gemini upload and streams [videoFile] directly to its upload URL. */
+    /** Starts a resumable Gemini upload and streams [mediaFile] directly to its upload URL. */
     private fun uploadGeminiFile(
         apiKey: String,
-        videoFile: File,
+        mediaFile: File,
         mimeType: String
     ): UploadedGeminiFile {
         val startRequest = Request.Builder()
             .url(geminiUrl("upload/v1beta/files", apiKey))
             .header("X-Goog-Upload-Protocol", "resumable")
             .header("X-Goog-Upload-Command", "start")
-            .header("X-Goog-Upload-Header-Content-Length", videoFile.length().toString())
+            .header("X-Goog-Upload-Header-Content-Length", mediaFile.length().toString())
             .header("X-Goog-Upload-Header-Content-Type", mimeType)
             .post(
-                JSONObject().put("file", JSONObject().put("display_name", videoFile.name))
+                JSONObject().put("file", JSONObject().put("display_name", mediaFile.name))
                     .toString().toRequestBody(jsonMediaType)
             )
             .build()
@@ -184,14 +208,14 @@ class TranscriptionClient(
             .url(uploadUrl)
             .header("X-Goog-Upload-Offset", "0")
             .header("X-Goog-Upload-Command", "upload, finalize")
-            .post(videoFile.asRequestBody(mimeType.toMediaType()))
+            .post(mediaFile.asRequestBody(mimeType.toMediaType()))
             .build()
 
         return client.newCall(uploadRequest).execute().use { response ->
             val responseBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw IOException(
-                    "Gemini video upload failed (${response.code}): " +
+                    "Gemini media upload failed (${response.code}): " +
                         (apiErrorMessage(responseBody) ?: responseBody)
                 )
             }
@@ -200,7 +224,7 @@ class TranscriptionClient(
             val file = root.optJSONObject("file") ?: root
             val name = file.optString("name").trim()
             if (name.isEmpty()) {
-                throw IOException("Gemini uploaded the video but returned no file identifier")
+                throw IOException("Gemini uploaded the media but returned no file identifier")
             }
             val uri = file.optString("uri").trim().ifBlank {
                 geminiApiRoot.newBuilder().addPathSegments("v1beta/$name").build().toString()
@@ -210,14 +234,14 @@ class TranscriptionClient(
         }
     }
 
-    /** Waits until Gemini has finished preparing a video before referencing it in generateContent. */
+    /** Waits until Gemini has finished preparing the uploaded media before referencing it. */
     private suspend fun waitForGeminiFile(apiKey: String, file: UploadedGeminiFile) {
         var state = file.state.ifBlank { "ACTIVE" }
         val deadline = System.currentTimeMillis() + FILE_PROCESSING_TIMEOUT_MS
 
         while (state != "ACTIVE") {
             if (state == "FAILED") {
-                throw IOException("Gemini could not process this video. Try another video format or use Groq Whisper.")
+                throw IOException("Gemini could not process this media file. Try another format or use Groq Whisper.")
             }
             if (System.currentTimeMillis() >= deadline) {
                 throw IOException("Gemini is still processing this video. Please try transcribing it again later.")
@@ -232,7 +256,7 @@ class TranscriptionClient(
                 val responseBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     throw IOException(
-                        "Could not check Gemini video processing status (${response.code}): " +
+                        "Could not check Gemini media processing status (${response.code}): " +
                             (apiErrorMessage(responseBody) ?: responseBody)
                     )
                 }
@@ -270,7 +294,7 @@ class TranscriptionClient(
         // Keep the previous direct upload for small clips. For high-bitrate/large videos, remux
         // only the audio track so the video frames do not count against Groq's 25 MB request limit.
         val extractedAudioFile = if (videoFile.length() > MAX_GROQ_AUDIO_FILE_BYTES) {
-            GroqAudioExtractor.extractAudioTrack(videoFile)
+            audioTrackExtractor(videoFile)
         } else {
             null
         }
@@ -397,12 +421,18 @@ class TranscriptionClient(
         val state: String
     )
 
+    private data class TranscriptionMediaSource(
+        val file: File,
+        val mimeType: String,
+        val temporaryFile: File? = null
+    )
+
     companion object {
-        /** Gemini Files API allows an individual file up to 2 GB. */
+        /** Gemini Files API allows an individual media file up to 2 GB. */
         const val MAX_GEMINI_FILE_SIZE_BYTES: Long = 2L * 1024L * 1024L * 1024L
 
         /** Stay safely under the 20 MB request limit after base64 expansion and JSON overhead. */
-        const val MAX_INLINE_VIDEO_BYTES: Long = 14L * 1024L * 1024L
+        const val MAX_INLINE_MEDIA_BYTES: Long = 14L * 1024L * 1024L
 
         // Leave room below Groq's 25 MB request cap for multipart headers and form fields.
         private const val MAX_GROQ_AUDIO_FILE_BYTES = 24_000_000L
@@ -410,7 +440,7 @@ class TranscriptionClient(
         private const val FILE_PROCESSING_POLL_INTERVAL_MS = 2_000L
         private const val GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
         private const val TRANSCRIPTION_PROMPT =
-            "Transcribe all spoken dialogue in this video into subtitle segments. " +
+            "Transcribe all spoken dialogue in the provided audio or video into subtitle segments. " +
                 "Return ONLY a JSON array of objects: [{\"start\": seconds(number), \"end\": seconds(number), " +
                 "\"text\": string, \"gender\": \"female\"|\"male\"}]. " +
                 "Keep each segment between 1 and 7 seconds, in the original spoken language, with accurate timestamps."
