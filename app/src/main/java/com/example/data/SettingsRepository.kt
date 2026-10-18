@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.example.BuildConfig
 import com.example.data.api.GeminiModels
 import com.example.data.api.SeaLionModels
+import com.example.data.api.WhisperLanguages
 import com.example.media.BlurRegion
 import com.example.media.BlurSettings
 import com.example.media.BlurStrength
@@ -24,6 +25,7 @@ data class AppSettings(
     val sealionModel: String = SeaLionModels.DEFAULT, // see SeaLionModels.OPTIONS (Gemma SEA-LION v4 27B)
     val sealionUrl: String = "https://api.sea-lion.ai/v1/",
     val transcriptionEngine: String = "gemini", // "gemini" or "groq_whisper"
+    val whisperLanguage: String = "auto", // Whisper audio language: "auto" or ISO-639-1 (see WhisperLanguages)
     val translationEngine: String = "gemini", // "gemini", "sealion", or "custom"
     val customApiName: String = "",
     val customApiUrl: String = "",
@@ -136,6 +138,7 @@ class SettingsRepository(private val context: Context) {
             sealionModel = SeaLionModels.resolve(prefs.getString("sealion_model", SeaLionModels.DEFAULT)),
             sealionUrl = prefs.getString("sealion_url", "https://api.sea-lion.ai/v1/") ?: "https://api.sea-lion.ai/v1/",
             transcriptionEngine = prefs.getString("transcription_engine", "gemini") ?: "gemini",
+            whisperLanguage = WhisperLanguages.sanitizeSetting(prefs.getString("whisper_language", "auto")),
             translationEngine = prefs.getString("translation_engine", "gemini") ?: "gemini",
             customApiName = prefs.getString("custom_api_name", "") ?: "",
             customApiUrl = prefs.getString("custom_api_url", "") ?: "",
@@ -165,6 +168,7 @@ class SettingsRepository(private val context: Context) {
             .putString("sealion_model", SeaLionModels.resolve(updated.sealionModel))
             .putString("sealion_url", updated.sealionUrl.trim())
             .putString("transcription_engine", updated.transcriptionEngine)
+            .putString("whisper_language", WhisperLanguages.sanitizeSetting(updated.whisperLanguage))
             .putString("translation_engine", updated.translationEngine)
             .putString("custom_api_name", updated.customApiName.trim())
             .putString("custom_api_url", updated.customApiUrl.trim())

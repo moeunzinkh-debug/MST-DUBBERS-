@@ -75,7 +75,8 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
     private val transcriptionClient = TranscriptionClient(
         geminiKeyProvider = { settingsRepository.settings.value.apiKey },
         groqKeyProvider = { settingsRepository.settings.value.groqApiKey },
-        geminiModelProvider = { settingsRepository.settings.value.geminiModel }
+        geminiModelProvider = { settingsRepository.settings.value.geminiModel },
+        groqLanguageProvider = { settingsRepository.settings.value.whisperLanguage }
     )
 
     private val translationClient = TranslationClient(
