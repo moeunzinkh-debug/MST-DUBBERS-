@@ -18,7 +18,7 @@ internal object AudioTrackExtractor {
     private const val DEFAULT_SAMPLE_BUFFER_BYTES = 1024 * 1024
     private const val MAX_SAMPLE_BUFFER_BYTES = 16 * 1024 * 1024
 
-    fun extractAudioTrack(videoFile: File): File {
+    fun extractAudioTrack(videoFile: File, preferredLanguage: String? = null): File {
         val outputFile = try {
             File.createTempFile("mst_transcription_audio_", ".m4a", videoFile.parentFile)
         } catch (e: Exception) {
@@ -31,9 +31,10 @@ internal object AudioTrackExtractor {
         var success = false
         try {
             extractor.setDataSource(videoFile.absolutePath)
-            val audioTrackIndex = (0 until extractor.trackCount).firstOrNull { index ->
-                extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-            } ?: throw IOException("No audio track was found in this video")
+            val audioTrackIndex = selectAudioTrackIndex(extractor, preferredLanguage)
+            if (audioTrackIndex < 0) {
+                throw IOException("No audio track was found in this video")
+            }
 
             extractor.selectTrack(audioTrackIndex)
             val audioFormat = extractor.getTrackFormat(audioTrackIndex)
@@ -116,5 +117,25 @@ internal object AudioTrackExtractor {
             }
             if (!success) outputFile.delete()
         }
+    }
+
+    /**
+     * Index of the audio track to transcribe: the first track whose declared language matches
+     * [preferredLanguage] (dual-audio releases carry e.g. both the Chinese original and the
+     * Khmer dub), otherwise the first audio track. Returns -1 when there is no audio.
+     */
+    fun selectAudioTrackIndex(extractor: MediaExtractor, preferredLanguage: String?): Int {
+        var firstAudioTrack = -1
+        for (index in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(index)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+            if (!mime.startsWith("audio/")) continue
+            if (firstAudioTrack < 0) firstAudioTrack = index
+            val declared = format.getString(MediaFormat.KEY_LANGUAGE)
+            if (preferredLanguage != null && WhisperLanguages.trackLanguageMatches(declared, preferredLanguage)) {
+                return index
+            }
+        }
+        return firstAudioTrack
     }
 }

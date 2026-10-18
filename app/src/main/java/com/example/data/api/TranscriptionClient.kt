@@ -1,6 +1,8 @@
 package com.example.data.api
 
 import android.util.Base64
+import com.example.media.WhisperAudioChunker
+import com.example.media.WhisperSegmentCleaner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -32,6 +34,11 @@ private fun buildDefaultTranscriptionHttpClient(): OkHttpClient = OkHttpClient.B
  * Gemini receives the video's compressed audio track instead of its high-bitrate video frames.
  * Small audio tracks are sent inline; larger ones use Gemini's resumable Files API and stream from
  * disk, avoiding loading hundreds of megabytes into memory.
+ *
+ * The Groq Whisper path follows TurboScribe's workflow: the requested audio language is passed
+ * to the model (so a Khmer dub is not auto-detected as Chinese), and the audio is sliced into
+ * speech blocks at silent scenes before upload, which keeps segment timestamps locked onto the
+ * actual dialogue instead of stretching across pauses and intro music.
  */
 class TranscriptionClient(
     private val geminiKeyProvider: () -> String,
@@ -39,7 +46,13 @@ class TranscriptionClient(
     private val geminiModelProvider: () -> String = { GeminiModels.DEFAULT },
     geminiApiBaseUrl: String = DEFAULT_GEMINI_API_ROOT,
     private val client: OkHttpClient = buildDefaultTranscriptionHttpClient(),
-    private val audioTrackExtractor: (File) -> File = { AudioTrackExtractor.extractAudioTrack(it) }
+    private val audioTrackExtractor: (File, String?) -> File = { file, language ->
+        AudioTrackExtractor.extractAudioTrack(file, language)
+    },
+    private val groqLanguageProvider: () -> String = { WhisperLanguages.AUTO },
+    private val whisperChunker: (File, String?) -> List<WhisperAudioChunker.Chunk>? = { file, language ->
+        WhisperAudioChunker.chunkAudio(file, language)
+    }
 ) {
     private val geminiApiRoot: HttpUrl = (geminiApiBaseUrl.trimEnd('/') + "/").toHttpUrl()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -124,7 +137,7 @@ class TranscriptionClient(
     private fun extractAudioForGemini(videoFile: File, videoMimeType: String): TranscriptionMediaSource {
         val originalMimeType = videoMimeType.trim().ifBlank { "video/mp4" }
         return try {
-            val audioFile = audioTrackExtractor(videoFile)
+            val audioFile = audioTrackExtractor(videoFile, null)
             if (audioFile == videoFile) {
                 TranscriptionMediaSource(videoFile, originalMimeType)
             } else {
@@ -293,14 +306,110 @@ class TranscriptionClient(
             throw IOException("Groq API key is required for Whisper Large v3. Please set it in Settings.")
         }
 
-        // Keep the previous direct upload for small clips. For high-bitrate/large videos, remux
-        // only the audio track so the video frames do not count against Groq's 25 MB request limit.
-        val extractedAudioFile = if (videoFile.length() > MAX_GROQ_AUDIO_FILE_BYTES) {
-            audioTrackExtractor(videoFile)
-        } else {
+        // TurboScribe's "Audio Language" setting: forcing the spoken language stops Whisper's
+        // auto-detection from picking the wrong language (e.g. hearing a Khmer dub as Chinese).
+        val language = WhisperLanguages.normalize(groqLanguageProvider())
+
+        // TurboScribe-style pipeline: slice the audio at silent scenes and transcribe each
+        // speech block separately. Whisper stretches segments across silence when it is handed
+        // one long file (a line spoken at 00:21 comes back as 00:07–00:23), so the silence
+        // never reaches the model in the first place here.
+        val chunks = try {
+            whisperChunker(videoFile, language)
+        } catch (_: Throwable) {
             null
         }
-        val uploadFile = extractedAudioFile ?: videoFile
+        if (!chunks.isNullOrEmpty()) {
+            try {
+                return transcribeGroqChunks(chunks, groqKey, language)
+            } finally {
+                chunks.forEach { it.wavFile.delete() }
+            }
+        }
+
+        // Fallback: the media codecs could not slice this file (or found no speech), so keep
+        // the classic single upload — still with the language hint.
+        return transcribeWithGroqSingleUpload(videoFile, groqKey, language)
+    }
+
+    /** Transcribes VAD-sliced speech blocks and reassembles TurboScribe-grade timestamps. */
+    private suspend fun transcribeGroqChunks(
+        chunks: List<WhisperAudioChunker.Chunk>,
+        groqKey: String,
+        language: String?
+    ): List<TranscribeItem> {
+        val cleanedSegments = mutableListOf<WhisperSegmentCleaner.TimedText>()
+
+        chunks.forEachIndexed { index, chunk ->
+            val rawSegments = executeGroqTranscriptionRequest(
+                uploadFile = chunk.wavFile,
+                uploadMediaType = "audio/wav",
+                groqKey = groqKey,
+                language = language
+            )
+            for (segment in rawSegments) {
+                // Whisper reports block-relative times, just like the block's speech
+                // regions. Snap edges that leaked into the padded silence back onto the
+                // detected speech (and drop anything invented over silence), then move
+                // the whole line onto the original video timeline.
+                val relative = WhisperSegmentCleaner.TimedText(
+                    startSec = segment.startSec,
+                    endSec = segment.endSec,
+                    text = segment.text
+                )
+                val clamped = WhisperSegmentCleaner.clampToSpeechRegions(relative, chunk.regions)
+                    ?: continue
+                cleanedSegments += clamped.copy(
+                    startSec = clamped.startSec + chunk.startSec,
+                    endSec = clamped.endSec + chunk.startSec
+                )
+            }
+            if (index < chunks.lastIndex) {
+                // Whisper endpoints are rate-limited per minute; a small pause between chunk
+                // uploads keeps longer videos inside the free-tier budget.
+                delay(GROQ_INTER_CHUNK_DELAY_MS)
+            }
+        }
+
+        val lines = WhisperSegmentCleaner.coalesceFragments(
+            WhisperSegmentCleaner.removeHallucinations(cleanedSegments)
+        )
+        return lines.mapIndexed { index, line ->
+            TranscribeItem(
+                start = line.startSec,
+                end = line.endSec,
+                text = line.text,
+                gender = if (index % 2 == 1) "male" else "female"
+            )
+        }
+    }
+
+    /**
+     * Legacy single-request Groq path, used when the audio could not be decoded and sliced
+     * on-device. The video's audio track is ALWAYS remuxed out first so that only the audio —
+     * never the high-bitrate video frames — is uploaded, whatever the file size; the original
+     * video is only sent when remuxing itself fails (unsupported container on this device).
+     */
+    private suspend fun transcribeWithGroqSingleUpload(
+        videoFile: File,
+        groqKey: String,
+        language: String?
+    ): List<TranscribeItem> {
+        var extractedAudioFile: File? = null
+        val uploadFile = try {
+            val extracted = audioTrackExtractor(videoFile, language)
+            if (extracted != videoFile) {
+                extractedAudioFile = extracted
+                extracted
+            } else {
+                // The extractor passed the video through untouched (nothing to remux).
+                videoFile
+            }
+        } catch (_: Throwable) {
+            // Remuxing failed (unsupported container, codec error, ...); sending the
+            // original file still beats failing the transcription outright.
+            videoFile
+        }
         try {
             if (uploadFile.length() > MAX_GROQ_AUDIO_FILE_BYTES) {
                 val megabytes = uploadFile.length() / (1024.0 * 1024.0)
@@ -313,6 +422,38 @@ class TranscriptionClient(
             }
 
             val uploadMediaType = if (extractedAudioFile != null) "audio/mp4" else "application/octet-stream"
+            val rawSegments = executeGroqTranscriptionRequest(
+                uploadFile = uploadFile,
+                uploadMediaType = uploadMediaType,
+                groqKey = groqKey,
+                language = language
+            )
+            return rawSegments
+                .mapIndexed { index, segment ->
+                    TranscribeItem(
+                        start = segment.startSec,
+                        end = maxOf(segment.endSec, segment.startSec + 0.5),
+                        text = segment.text,
+                        gender = if (index % 2 == 1) "male" else "female"
+                    )
+                }
+                .sortedBy { it.start }
+        } finally {
+            // Never delete the user's original video, only the temporary audio file.
+            extractedAudioFile?.delete()
+        }
+    }
+
+    /** One multipart transcription request, retried on rate limits and server hiccups. */
+    private suspend fun executeGroqTranscriptionRequest(
+        uploadFile: File,
+        uploadMediaType: String,
+        groqKey: String,
+        language: String?
+    ): List<GroqRawSegment> {
+        var attempt = 0
+        var lastError = ""
+        while (true) {
             val requestBody = okhttp3.MultipartBody.Builder()
                 .setType(okhttp3.MultipartBody.FORM)
                 .addFormDataPart(
@@ -320,8 +461,11 @@ class TranscriptionClient(
                     uploadFile.name,
                     uploadFile.asRequestBody(uploadMediaType.toMediaType())
                 )
-                .addFormDataPart("model", "whisper-large-v3")
+                .addFormDataPart("model", GROQ_MODEL)
                 .addFormDataPart("response_format", "verbose_json")
+                .apply {
+                    if (language != null) addFormDataPart("language", language)
+                }
                 .build()
 
             val request = Request.Builder()
@@ -330,23 +474,39 @@ class TranscriptionClient(
                 .post(requestBody)
                 .build()
 
-            return client.newCall(request).execute().use { response ->
+            var retryAfterSec: Long? = null
+            client.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    throw IOException("Groq Whisper error ${response.code}: $responseBody")
+                when {
+                    response.isSuccessful -> return parseGroqVerboseSegments(responseBody)
+                    response.code == 429 || response.code in 500..599 -> {
+                        retryAfterSec = response.header("Retry-After")?.trim()?.toLongOrNull()
+                        lastError = "Groq Whisper error ${response.code}: $responseBody"
+                    }
+                    else -> throw IOException("Groq Whisper error ${response.code}: $responseBody")
                 }
-                parseGroqSegments(responseBody)
             }
-        } finally {
-            extractedAudioFile?.delete()
+
+            attempt++
+            if (attempt >= MAX_GROQ_ATTEMPTS) {
+                throw IOException("$lastError (gave up after $attempt attempts)")
+            }
+            val backoffSec = (
+                retryAfterSec ?: GROQ_RETRY_BACKOFF_SEC[
+                    minOf(attempt - 1, GROQ_RETRY_BACKOFF_SEC.lastIndex)
+                ]
+                ).coerceIn(0, MAX_GROQ_RETRY_WAIT_SEC)
+            delay(backoffSec * 1000L)
         }
     }
 
-    private fun parseGroqSegments(jsonString: String): List<TranscribeItem> {
+    /** Raw Whisper segments of one uploaded block, exactly as the API reports them. */
+    private data class GroqRawSegment(val startSec: Double, val endSec: Double, val text: String)
+
+    private fun parseGroqVerboseSegments(jsonString: String): List<GroqRawSegment> {
         val root = JSONObject(jsonString)
         val segmentsArray = root.optJSONArray("segments") ?: return emptyList()
-        val list = mutableListOf<TranscribeItem>()
-
+        val list = mutableListOf<GroqRawSegment>()
         for (i in 0 until segmentsArray.length()) {
             val seg = segmentsArray.getJSONObject(i)
             val start = seg.optDouble("start", 0.0)
@@ -354,16 +514,15 @@ class TranscriptionClient(
             val text = seg.optString("text", "").trim()
             if (text.isNotEmpty()) {
                 list.add(
-                    TranscribeItem(
-                        start = start,
-                        end = maxOf(end, start + 0.5),
-                        text = text,
-                        gender = if (i % 2 == 1) "male" else "female"
+                    GroqRawSegment(
+                        startSec = start,
+                        endSec = maxOf(end, start + WhisperSegmentCleaner.MIN_SEGMENT_SEC),
+                        text = text
                     )
                 )
             }
         }
-        return list.sortedBy { it.start }
+        return list
     }
 
     private fun extractCandidateText(jsonString: String): String {
@@ -441,6 +600,11 @@ class TranscriptionClient(
         private const val FILE_PROCESSING_TIMEOUT_MS = 15 * 60 * 1000L
         private const val FILE_PROCESSING_POLL_INTERVAL_MS = 2_000L
         private const val GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+        private const val GROQ_MODEL = "whisper-large-v3"
+        private const val MAX_GROQ_ATTEMPTS = 3
+        private const val GROQ_INTER_CHUNK_DELAY_MS = 400L
+        private const val MAX_GROQ_RETRY_WAIT_SEC = 30L
+        private val GROQ_RETRY_BACKOFF_SEC = longArrayOf(4L, 12L)
         private const val TRANSCRIPTION_PROMPT =
             "Transcribe all spoken dialogue in the provided audio or video into subtitle segments. " +
                 "Return ONLY a JSON array of objects: [{\"start\": seconds(number), \"end\": seconds(number), " +

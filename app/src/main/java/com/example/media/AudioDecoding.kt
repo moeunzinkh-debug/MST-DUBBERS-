@@ -33,7 +33,14 @@ internal class ShortArrayBuilder(initialCapacity: Int = 16 * 1024) {
         size += length
     }
 
-    fun toShortArray(): ShortArray = data.copyOf(size)
+    fun toShortArray(length: Int = size): ShortArray {
+        val n = length.coerceIn(0, size)
+        return data.copyOf(n)
+    }
+
+    fun clear() {
+        size = 0
+    }
 
     private fun ensureCapacity(required: Int) {
         if (required <= data.size) return

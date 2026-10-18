@@ -77,6 +77,7 @@ import com.example.data.SettingsRepository
 import com.example.data.api.GeminiModels
 import com.example.data.api.SeaLionModelOption
 import com.example.data.api.SeaLionModels
+import com.example.data.api.WhisperLanguages
 import com.example.data.db.SegmentEntity
 import com.example.ui.theme.DarkAccent
 import com.example.ui.theme.DarkBg2
@@ -111,6 +112,7 @@ fun SettingsSheet(
     var sealionUrlText by remember { mutableStateOf(settings.sealionUrl) }
 
     var transcriptionEngine by remember { mutableStateOf(settings.transcriptionEngine) }
+    var selectedWhisperLanguage by remember { mutableStateOf(WhisperLanguages.sanitizeSetting(settings.whisperLanguage)) }
     var translationEngine by remember { mutableStateOf(settings.translationEngine) }
 
     var customNameText by remember { mutableStateOf(settings.customApiName) }
@@ -128,6 +130,7 @@ fun SettingsSheet(
     var langDropdownExpanded by remember { mutableStateOf(false) }
     var geminiModelDropdownExpanded by remember { mutableStateOf(false) }
     var sealionModelDropdownExpanded by remember { mutableStateOf(false) }
+    var whisperLangDropdownExpanded by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -179,7 +182,7 @@ fun SettingsSheet(
             }
             Text(
                 text = if (transcriptionEngine == "groq_whisper") {
-                    "Large videos use extracted audio with Groq's 25 MB API limit."
+                    "TurboScribe-style: audio is sliced at silent scenes for accurate timestamps, then transcribed with Groq Whisper Large v3."
                 } else {
                     "Gemini transcribes extracted audio for faster results (up to 2 GB)."
                 },
@@ -187,6 +190,62 @@ fun SettingsSheet(
                 fontSize = 11.sp,
                 modifier = Modifier.padding(top = 6.dp)
             )
+
+            // 1b. Whisper Audio Language (TurboScribe-style "Audio Language" setting)
+            if (transcriptionEngine == "groq_whisper") {
+                Spacer(modifier = Modifier.height(10.dp))
+                ExposedDropdownMenuBox(
+                    expanded = whisperLangDropdownExpanded,
+                    onExpandedChange = { whisperLangDropdownExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = WhisperLanguages.labelFor(selectedWhisperLanguage),
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Default.GraphicEq, contentDescription = null, tint = SkyAccent)
+                        },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = whisperLangDropdownExpanded) },
+                        supportingText = {
+                            Text(
+                                "ភាសានៃសំឡេងក្នុងវីដេអូ — កំណត់ដូច TurboScribe ដើម្បីឱ្យ Whisper ចាប់បានត្រឹមត្រូវ (Auto = ស្វ័យប្រវត្តិ)។",
+                                color = DarkMuted,
+                                fontSize = 11.sp
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable, true)
+                            .testTag("whisper_language_dropdown"),
+                        colors = defaultTextFieldColors(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    ExposedDropdownMenu(
+                        expanded = whisperLangDropdownExpanded,
+                        onDismissRequest = { whisperLangDropdownExpanded = false },
+                        modifier = Modifier.background(DarkCard)
+                    ) {
+                        WhisperLanguages.OPTIONS.forEach { option ->
+                            val isSelected = option.code == selectedWhisperLanguage
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = option.label,
+                                        color = if (isSelected) SkyAccent else DarkFg,
+                                        fontSize = 14.sp,
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                    )
+                                },
+                                onClick = {
+                                    selectedWhisperLanguage = option.code
+                                    whisperLangDropdownExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(14.dp))
 
@@ -573,6 +632,7 @@ fun SettingsSheet(
                             sealionModel = selectedSeaLionModel,
                             sealionUrl = sealionUrlText,
                             transcriptionEngine = transcriptionEngine,
+                            whisperLanguage = selectedWhisperLanguage,
                             translationEngine = translationEngine,
                             customApiName = customNameText,
                             customApiUrl = customUrlText,
