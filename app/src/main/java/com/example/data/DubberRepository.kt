@@ -20,6 +20,19 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
+/**
+ * Result of generating one line's voice.
+ *
+ * [speechOnsetSec] is where the actor actually starts speaking in the original audio
+ * (detected from the waveform), or null when no clear onset was found and the subtitle
+ * timing was kept. The UI reports this so a silent alignment failure is visible instead
+ * of the dub quietly starting at the subtitle start, ahead of the actor.
+ */
+data class GeneratedVoice(
+    val segment: SegmentEntity,
+    val speechOnsetSec: Double?
+)
+
 class DubberRepository(
     private val context: Context,
     private val database: AppDatabase,
@@ -29,6 +42,11 @@ class DubberRepository(
     private val translationClient: TranslationClient,
     private val edgeTtsClient: EdgeTtsClient
 ) {
+    private companion object {
+        /** How far past a subtitle slot's end to look for the actor's speech onset. */
+        const val SEARCH_LOOKAHEAD_SEC = 2.5
+    }
+
     private val projectDao = database.projectDao()
     private val segmentDao = database.segmentDao()
 
@@ -299,7 +317,7 @@ class DubberRepository(
     suspend fun generateVoiceForSegment(
         segmentId: Long,
         allowGeminiFallback: Boolean = true
-    ): SegmentEntity = withContext(Dispatchers.IO) {
+    ): GeneratedVoice = withContext(Dispatchers.IO) {
         val seg = segmentDao.getSegmentById(segmentId)
             ?: throw TtsException("This line no longer exists", TtsException.Kind.PERMANENT)
 
@@ -368,15 +386,30 @@ class DubberRepository(
             if (oldFile.exists()) oldFile.delete()
         }
 
-        // Audio VAD Snap: detect exact moment dialogue is spoken in the original video audio track.
+        // Audio VAD Snap: detect the exact moment dialogue is spoken in the original
+        // video audio track.
+        //
+        // The search window must extend past the subtitle slot end: when the subtitles
+        // run ahead of the picture (a common global offset), the actor only starts
+        // speaking *after* seg.end, so searching only inside [seg.start, seg.end] can
+        // never find the speech and the dub stays at the subtitle start. Look up to
+        // SEARCH_LOOKAHEAD_SEC past the slot, but not into the next line.
         val project = projectDao.getProjectById(seg.projectId)
         val videoFile = project?.videoPath?.takeIf { it.isNotBlank() }?.let { File(it) }
+        val siblings = segmentDao.getSegmentsForProject(seg.projectId)
+            .sortedWith(compareBy<SegmentEntity>({ it.start }, { it.idx }))
+        val nextStart = siblings.firstOrNull { it.id != seg.id && it.start > seg.start }?.start
+        val searchEnd = when {
+            nextStart != null && nextStart > seg.end -> minOf(seg.end + SEARCH_LOOKAHEAD_SEC, nextStart)
+            nextStart != null -> seg.end // next line overlaps this slot; stay inside it
+            else -> seg.end + SEARCH_LOOKAHEAD_SEC
+        }
         val vadOnset = if (videoFile != null && videoFile.exists()) {
             try {
                 com.example.media.AudioVadDetector.detectSpeechOnset(
                     mediaFile = videoFile,
                     startSec = seg.start,
-                    endSec = seg.end
+                    endSec = searchEnd
                 )
             } catch (e: Exception) {
                 null
@@ -389,15 +422,25 @@ class DubberRepository(
         // speech fills the whole slot and routinely placed the dub ahead of the actor.
         // A dub longer than its slot is fine: DubTimeline's Auto-Fit speeds it up and cuts
         // it when the next line starts.
-        val newStart = vadOnset?.coerceIn(seg.start - 0.35, seg.end) ?: seg.start
+        val newStart = vadOnset?.coerceIn(seg.start - 0.35, searchEnd) ?: seg.start
+        // If speech starts at/after the old slot end, stretch the end too (bounded by the
+        // next line): the preview only plays a line while the playhead is inside
+        // [start, end), so a zero-length slot would never be heard in the preview.
+        val newEnd = if (vadOnset != null && newStart > seg.end - 0.4) {
+            val stretched = maxOf(seg.end, newStart + 0.4)
+            if (nextStart != null && nextStart > newStart + 0.2) minOf(stretched, nextStart) else stretched
+        } else {
+            seg.end
+        }
 
         val updated = seg.copy(
             start = newStart,
+            end = newEnd,
             audioPath = audioFile.absolutePath,
             audioDuration = durationSec
         )
         segmentDao.updateSegment(updated)
-        updated
+        GeneratedVoice(segment = updated, speechOnsetSec = vadOnset)
     }
 
     suspend fun shiftAllSegments(projectId: Long, offsetSec: Double) = withContext(Dispatchers.IO) {

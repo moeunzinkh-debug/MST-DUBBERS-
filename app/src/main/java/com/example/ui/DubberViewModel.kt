@@ -464,15 +464,21 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         _voicingProgress.value = VoiceBatchProgress(0, targets.size)
         voiceJob = viewModelScope.launch {
             try {
+                var onsetAligned = 0
+                var onsetMissing = 0
                 val outcome = VoiceBatchRunner().run(
                     segments = targets,
                     generate = { seg, lastAttempt ->
-                        repository.generateVoiceForSegment(seg.id, allowGeminiFallback = lastAttempt)
+                        val generated = repository.generateVoiceForSegment(seg.id, allowGeminiFallback = lastAttempt)
+                        if (generated.speechOnsetSec != null) onsetAligned++ else onsetMissing++
                     },
                     onLineDone = { seg, error -> recordVoiceResult(seg.id, error) },
                     onProgress = { _voicingProgress.value = it }
                 )
-                showToast(batchSummary(outcome, targets), isError = outcome.failed.isNotEmpty())
+                showToast(
+                    batchSummary(outcome, targets, onsetAligned, onsetMissing),
+                    isError = outcome.failed.isNotEmpty()
+                )
             } catch (e: CancellationException) {
                 showToast("Voice generation stopped")
                 throw e
@@ -499,7 +505,12 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         if (segmentId in _voiceIssues.value) _voiceIssues.value = _voiceIssues.value - segmentId
     }
 
-    private fun batchSummary(outcome: VoiceBatchOutcome, targets: List<SegmentEntity>): String {
+    private fun batchSummary(
+        outcome: VoiceBatchOutcome,
+        targets: List<SegmentEntity>,
+        onsetAligned: Int = 0,
+        onsetMissing: Int = 0
+    ): String {
         val lineNumbers = targets.associate { it.id to it.idx }
         fun numbers(ids: Collection<Long>): String {
             val list = ids.mapNotNull { lineNumbers[it] }.sorted()
@@ -514,6 +525,15 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
             parts += "${outcome.failed.size} failed (${numbers(outcome.failed.keys)}): ${sentence(outcome.failed.values.first())}"
         }
         var text = parts.joinToString(". ") + "."
+        // Waveform alignment report: without this the VAD used to fail silently and the
+        // dub just stayed at the subtitle start, ahead of the actor.
+        if (onsetAligned > 0) {
+            text += " $onsetAligned line(s) aligned to the actor's speech onset (តម្រឹមនឹងរលកសំឡេង)."
+        }
+        if (onsetMissing > 0) {
+            text += " $onsetMissing line(s): no clear speech onset found in the original audio," +
+                " subtitle timing kept (រកមិនឃើញចំណុចចាប់ផ្តើមនិយាយក្នុងរលកសំឡេងដើម)."
+        }
         if (outcome.stoppedEarly) {
             text += " Stopped because several lines in a row failed: check the internet or the TTS server."
         }
@@ -544,21 +564,38 @@ class DubberViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 var updated: SegmentEntity? = null
+                var detectedOnset: Double? = null
                 val outcome = VoiceBatchRunner().run(
                     segments = listOf(segment),
                     generate = { seg, lastAttempt ->
-                        updated = repository.generateVoiceForSegment(seg.id, allowGeminiFallback = lastAttempt)
+                        val generated = repository.generateVoiceForSegment(seg.id, allowGeminiFallback = lastAttempt)
+                        updated = generated.segment
+                        detectedOnset = generated.speechOnsetSec
                     },
                     onLineDone = { seg, error -> recordVoiceResult(seg.id, error) }
                 )
                 val result = updated
                 when {
-                    result != null -> if (autoPlay) {
-                        if (_duration.value > 0.0 || !_currentProject.value?.videoPath.isNullOrBlank()) {
-                            seekTo(result.start)
-                            setPlaying(true)
+                    result != null -> {
+                        val onset = detectedOnset
+                        if (onset != null) {
+                            showToast(
+                                "Line ${segment.idx}: start aligned to speech onset at %.2fs (តម្រឹមនឹងរលកសំឡេង)".format(onset)
+                            )
                         } else {
-                            playAudioFile(result.audioPath, result.id, result.customSpeed)
+                            showToast(
+                                "Line ${segment.idx}: no clear speech onset found in the original audio; " +
+                                    "subtitle timing kept (រកមិនឃើញចំណុចចាប់ផ្តើមនិយាយ)",
+                                true
+                            )
+                        }
+                        if (autoPlay) {
+                            if (_duration.value > 0.0 || !_currentProject.value?.videoPath.isNullOrBlank()) {
+                                seekTo(result.start)
+                                setPlaying(true)
+                            } else {
+                                playAudioFile(result.audioPath, result.id, result.customSpeed)
+                            }
                         }
                     }
                     outcome.skipped.isNotEmpty() -> showToast(
