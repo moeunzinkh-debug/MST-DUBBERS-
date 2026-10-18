@@ -147,7 +147,7 @@ object AudioClipDecoder {
     }
 
     /** Appends interleaved decoder output (16-bit or float) to [out], averaged down to mono. */
-    private fun appendAsMono(buffer: ByteBuffer, encoding: Int, channelCount: Int, out: ShortArrayBuilder) {
+    internal fun appendAsMono(buffer: ByteBuffer, encoding: Int, channelCount: Int, out: ShortArrayBuilder) {
         val channels = channelCount.coerceAtLeast(1)
         val data = buffer.slice().order(ByteOrder.nativeOrder())
         if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {

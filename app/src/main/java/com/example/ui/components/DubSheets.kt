@@ -75,6 +75,8 @@ import androidx.compose.ui.unit.sp
 import com.example.data.AppSettings
 import com.example.data.SettingsRepository
 import com.example.data.api.GeminiModels
+import com.example.data.api.SeaLionModelOption
+import com.example.data.api.SeaLionModels
 import com.example.data.db.SegmentEntity
 import com.example.ui.theme.DarkAccent
 import com.example.ui.theme.DarkBg2
@@ -105,7 +107,7 @@ fun SettingsSheet(
     var selectedGeminiModel by remember { mutableStateOf(GeminiModels.resolve(settings.geminiModel)) }
     var groqApiKeyText by remember { mutableStateOf(settings.groqApiKey) }
     var sealionApiKeyText by remember { mutableStateOf(settings.sealionApiKey) }
-    var sealionModelText by remember { mutableStateOf(settings.sealionModel) }
+    var selectedSeaLionModel by remember { mutableStateOf(SeaLionModels.resolve(settings.sealionModel)) }
     var sealionUrlText by remember { mutableStateOf(settings.sealionUrl) }
 
     var transcriptionEngine by remember { mutableStateOf(settings.transcriptionEngine) }
@@ -125,6 +127,7 @@ fun SettingsSheet(
     var showKey by remember { mutableStateOf(false) }
     var langDropdownExpanded by remember { mutableStateOf(false) }
     var geminiModelDropdownExpanded by remember { mutableStateOf(false) }
+    var sealionModelDropdownExpanded by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -325,40 +328,71 @@ fun SettingsSheet(
 
             if (translationEngine == "sealion") {
                 Spacer(modifier = Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = sealionModelText,
-                    onValueChange = { sealionModelText = it },
-                    label = { Text("SEA-LION Model ID") },
-                    placeholder = { Text("aisingapore/Qwen-SEA-LION-v4.5-27B-IT") },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = defaultTextFieldColors(),
-                    shape = RoundedCornerShape(10.dp)
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Popular Models (ចុចដើម្បីជ្រើសរើស):", color = DarkMuted, fontSize = 11.sp)
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(
-                        "Qwen-SEA-LION-v4.5-27B-IT" to "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
-                        "Llama-v3-70B-IT" to "aisingapore/Llama-SEA-LION-v3-70B-IT"
-                    ).forEach { (label, modelId) ->
-                        val isSelected = sealionModelText == modelId
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (isSelected) SkyAccent.copy(alpha = 0.2f) else DarkCard)
-                                .border(1.dp, if (isSelected) SkyAccent else DarkLine, RoundedCornerShape(8.dp))
-                                .clickable { sealionModelText = modelId }
-                                .padding(vertical = 6.dp, horizontal = 4.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = label,
-                                color = if (isSelected) SkyAccent else DarkFg,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1
+                // SEA-LION Model drop-down (Gemma SEA-LION v4 27B / Qwen v4.5 / Llama v3)
+                Text("SEA-LION Model (ម៉ូដែល SEA-LION)", color = SkyAccent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+                ExposedDropdownMenuBox(
+                    expanded = sealionModelDropdownExpanded,
+                    onExpandedChange = { sealionModelDropdownExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = SeaLionModels.labelFor(selectedSeaLionModel),
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = null, tint = SkyAccent)
+                        },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = sealionModelDropdownExpanded) },
+                        supportingText = {
+                            Text(selectedSeaLionModel, color = DarkMuted, fontSize = 11.sp)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable, true)
+                            .testTag("sealion_model_dropdown"),
+                        colors = defaultTextFieldColors(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    ExposedDropdownMenu(
+                        expanded = sealionModelDropdownExpanded,
+                        onDismissRequest = { sealionModelDropdownExpanded = false },
+                        modifier = Modifier.background(DarkCard)
+                    ) {
+                        // Keep a model id saved by an older version (free-text field)
+                        // selectable instead of silently replacing it.
+                        val seaLionOptions = SeaLionModels.OPTIONS + listOfNotNull(
+                            if (SeaLionModels.isOffered(selectedSeaLionModel)) null
+                            else SeaLionModelOption(
+                                id = selectedSeaLionModel,
+                                label = selectedSeaLionModel,
+                                description = "Saved model ID (from a previous version)"
+                            )
+                        )
+                        seaLionOptions.forEach { option ->
+                            val isSelected = option.id == selectedSeaLionModel
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(
+                                            text = option.label,
+                                            color = if (isSelected) SkyAccent else DarkFg,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(text = option.description, color = DarkMuted, fontSize = 12.sp)
+                                    }
+                                },
+                                trailingIcon = {
+                                    if (isSelected) {
+                                        Icon(imageVector = Icons.Default.Check, contentDescription = "Selected", tint = SkyAccent)
+                                    }
+                                },
+                                onClick = {
+                                    selectedSeaLionModel = option.id
+                                    sealionModelDropdownExpanded = false
+                                },
+                                modifier = Modifier.testTag("sealion_model_option_${option.id}")
                             )
                         }
                     }
@@ -536,7 +570,7 @@ fun SettingsSheet(
                             geminiModel = selectedGeminiModel,
                             groqApiKey = groqApiKeyText,
                             sealionApiKey = sealionApiKeyText,
-                            sealionModel = sealionModelText,
+                            sealionModel = selectedSeaLionModel,
                             sealionUrl = sealionUrlText,
                             transcriptionEngine = transcriptionEngine,
                             translationEngine = translationEngine,

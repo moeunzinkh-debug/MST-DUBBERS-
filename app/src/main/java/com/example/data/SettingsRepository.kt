@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.example.BuildConfig
 import com.example.data.api.GeminiModels
+import com.example.data.api.SeaLionModels
 import com.example.media.BlurRegion
 import com.example.media.BlurSettings
 import com.example.media.BlurStrength
@@ -20,7 +21,7 @@ data class AppSettings(
     val geminiModel: String = GeminiModels.DEFAULT, // see GeminiModels.OPTIONS (3.8 Flash / 3.6 Flash)
     val groqApiKey: String = "",
     val sealionApiKey: String = "",
-    val sealionModel: String = "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
+    val sealionModel: String = SeaLionModels.DEFAULT, // see SeaLionModels.OPTIONS (Gemma SEA-LION v4 27B)
     val sealionUrl: String = "https://api.sea-lion.ai/v1/",
     val transcriptionEngine: String = "gemini", // "gemini" or "groq_whisper"
     val translationEngine: String = "gemini", // "gemini", "sealion", or "custom"
@@ -132,7 +133,7 @@ class SettingsRepository(private val context: Context) {
             geminiModel = GeminiModels.resolve(prefs.getString("gemini_model", GeminiModels.DEFAULT)),
             groqApiKey = prefs.getString("groq_api_key", "") ?: "",
             sealionApiKey = prefs.getString("sealion_api_key", "") ?: "",
-            sealionModel = prefs.getString("sealion_model", "aisingapore/Qwen-SEA-LION-v4.5-27B-IT") ?: "aisingapore/Qwen-SEA-LION-v4.5-27B-IT",
+            sealionModel = SeaLionModels.resolve(prefs.getString("sealion_model", SeaLionModels.DEFAULT)),
             sealionUrl = prefs.getString("sealion_url", "https://api.sea-lion.ai/v1/") ?: "https://api.sea-lion.ai/v1/",
             transcriptionEngine = prefs.getString("transcription_engine", "gemini") ?: "gemini",
             translationEngine = prefs.getString("translation_engine", "gemini") ?: "gemini",
@@ -161,7 +162,7 @@ class SettingsRepository(private val context: Context) {
             .putString("gemini_model", updated.geminiModel)
             .putString("groq_api_key", updated.groqApiKey.trim())
             .putString("sealion_api_key", updated.sealionApiKey.trim())
-            .putString("sealion_model", updated.sealionModel.trim())
+            .putString("sealion_model", SeaLionModels.resolve(updated.sealionModel))
             .putString("sealion_url", updated.sealionUrl.trim())
             .putString("transcription_engine", updated.transcriptionEngine)
             .putString("translation_engine", updated.translationEngine)
@@ -205,7 +206,7 @@ class SettingsRepository(private val context: Context) {
             .putString("gemini_model", geminiModel)
             .putString("groq_api_key", groqApiKey.trim())
             .putString("sealion_api_key", sealionApiKey.trim())
-            .putString("sealion_model", sealionModel.trim())
+            .putString("sealion_model", SeaLionModels.resolve(sealionModel))
             .putString("sealion_url", sealionUrl.trim())
             .putString("transcription_engine", transcriptionEngine)
             .putString("translation_engine", translationEngine)
@@ -225,7 +226,7 @@ class SettingsRepository(private val context: Context) {
             geminiModel = geminiModel,
             groqApiKey = groqApiKey.trim(),
             sealionApiKey = sealionApiKey.trim(),
-            sealionModel = sealionModel.trim(),
+            sealionModel = SeaLionModels.resolve(sealionModel),
             sealionUrl = sealionUrl.trim(),
             transcriptionEngine = transcriptionEngine,
             translationEngine = translationEngine,

@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 class TranslationClient(
     private val geminiKeyProvider: () -> String,
     private val sealionKeyProvider: () -> String,
-    private val sealionModelProvider: () -> String = { "aisingapore/Qwen-SEA-LION-v4.5-27B-IT" },
+    private val sealionModelProvider: () -> String = { SeaLionModels.DEFAULT },
     private val sealionUrlProvider: () -> String = { "https://api.sea-lion.ai/v1/" },
     private val customConfigProvider: () -> Quadruple<String, String, String, String>, // name, url, key, model
     private val geminiModelProvider: () -> String = { GeminiModels.DEFAULT }
@@ -111,7 +111,7 @@ class TranslationClient(
             throw IOException("SeaLion API key is required. Please set it in Settings.")
         }
 
-        val model = sealionModelProvider().trim().ifBlank { "aisingapore/Qwen-SEA-LION-v4.5-27B-IT" }
+        val model = SeaLionModels.resolve(sealionModelProvider())
         val rawUrl = sealionUrlProvider().trim().ifBlank { "https://api.sea-lion.ai/v1/" }
         val endpoint = if (rawUrl.endsWith("/chat/completions")) rawUrl else "${rawUrl.removeSuffix("/")}/chat/completions"
 
@@ -205,7 +205,7 @@ class TranslationClient(
         val responseBody = response.body?.string() ?: ""
         if (!response.isSuccessful) {
             val hint = if (responseBody.contains("Connection error", ignoreCase = true) || response.code == 500) {
-                "\n\nHint: Model '$modelName' may be offline on the server. Please switch to 'aisingapore/Qwen-SEA-LION-v4.5-27B-IT' in Settings."
+                "\n\nHint: Model '$modelName' may be offline on the server. Please switch to '${SeaLionModels.DEFAULT}' in Settings."
             } else ""
             throw IOException("Translation API error (${modelName}) ${response.code}: $responseBody$hint")
         }
