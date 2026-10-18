@@ -386,20 +386,30 @@ class TranscriptionClient(
 
     /**
      * Legacy single-request Groq path, used when the audio could not be decoded and sliced
-     * on-device. For high-bitrate/large videos the audio track is remuxed so the video frames
-     * do not count against Groq's 25 MB request limit.
+     * on-device. The video's audio track is ALWAYS remuxed out first so that only the audio —
+     * never the high-bitrate video frames — is uploaded, whatever the file size; the original
+     * video is only sent when remuxing itself fails (unsupported container on this device).
      */
     private suspend fun transcribeWithGroqSingleUpload(
         videoFile: File,
         groqKey: String,
         language: String?
     ): List<TranscribeItem> {
-        val extractedAudioFile = if (videoFile.length() > MAX_GROQ_AUDIO_FILE_BYTES) {
-            audioTrackExtractor(videoFile, language)
-        } else {
-            null
+        var extractedAudioFile: File? = null
+        val uploadFile = try {
+            val extracted = audioTrackExtractor(videoFile, language)
+            if (extracted != videoFile) {
+                extractedAudioFile = extracted
+                extracted
+            } else {
+                // The extractor passed the video through untouched (nothing to remux).
+                videoFile
+            }
+        } catch (_: Throwable) {
+            // Remuxing failed (unsupported container, codec error, ...); sending the
+            // original file still beats failing the transcription outright.
+            videoFile
         }
-        val uploadFile = extractedAudioFile ?: videoFile
         try {
             if (uploadFile.length() > MAX_GROQ_AUDIO_FILE_BYTES) {
                 val megabytes = uploadFile.length() / (1024.0 * 1024.0)
@@ -429,6 +439,7 @@ class TranscriptionClient(
                 }
                 .sortedBy { it.start }
         } finally {
+            // Never delete the user's original video, only the temporary audio file.
             extractedAudioFile?.delete()
         }
     }

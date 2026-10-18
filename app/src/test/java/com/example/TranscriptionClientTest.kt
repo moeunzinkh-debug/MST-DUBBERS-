@@ -446,4 +446,50 @@ class TranscriptionClientTest {
 
         assertFalse("Auto-detect must not send a language field", uploadBody.contains("name=\"language\""))
     }
+
+    @Test
+    fun `Groq fallback uploads the extracted audio track even for small videos`() = runBlocking {
+        val videoFile = temporaryFolder.newFile("small.mp4").apply { writeText("video frames") }
+        val audioFile = temporaryFolder.newFile("audio.m4a").apply { writeText("audio only") }
+        var uploadBody = ""
+
+        val fakeHttpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                val buffer = Buffer()
+                request.body!!.writeTo(buffer)
+                uploadBody = buffer.readUtf8()
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(
+                        """{"segments":[{"start":0,"end":1,"text":"Hello"}]}"""
+                            .toResponseBody("application/json; charset=utf-8".toMediaType())
+                    )
+                    .build()
+            }
+            .build()
+
+        val transcriber = TranscriptionClient(
+            geminiKeyProvider = { "test-gemini-key" },
+            groqKeyProvider = { "gsk_test" },
+            client = fakeHttpClient,
+            audioTrackExtractor = { _, _ -> audioFile },
+            whisperChunker = { _, _ -> null }
+        )
+
+        val items = transcriber.transcribe(videoFile, "video/mp4", "groq_whisper")
+
+        assertTrue(
+            "Even a small video must be uploaded as its extracted audio track",
+            uploadBody.contains("filename=\"audio.m4a\"")
+        )
+        assertTrue(uploadBody.contains("audio only"))
+        assertFalse("The video frames must never be uploaded", uploadBody.contains("video frames"))
+        assertEquals(listOf(TranscribeItem(0.0, 1.0, "Hello", "female")), items)
+        assertFalse("Temporary audio should be removed", audioFile.exists())
+        assertTrue("The original video must be kept", videoFile.exists())
+    }
 }
