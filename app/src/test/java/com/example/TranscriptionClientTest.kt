@@ -267,9 +267,17 @@ class TranscriptionClientTest {
                 val buffer = Buffer()
                 request.body!!.writeTo(buffer)
                 val body = buffer.readUtf8()
-                assertTrue(body.contains("name=\"model\"\r\n\r\nwhisper-large-v3"))
-                assertTrue(body.contains("name=\"response_format\"\r\n\r\nverbose_json"))
-                assertTrue("The audio language must be forced like TurboScribe does", body.contains("name=\"language\"\r\n\r\nkm\r\n"))
+                // OkHttp writes a per-part Content-Length header between the disposition
+                // header and the blank line, so a form value always sits right after
+                // "\r\n\r\n" and before the part-terminating "\r\n".
+                assertTrue(body.contains("name=\"model\""))
+                assertTrue(body.contains("\r\n\r\nwhisper-large-v3\r\n"))
+                assertTrue(body.contains("name=\"response_format\""))
+                assertTrue(body.contains("\r\n\r\nverbose_json\r\n"))
+                assertTrue(
+                    "The audio language must be forced like TurboScribe does",
+                    body.contains("name=\"language\"") && body.contains("\r\n\r\nkm\r\n")
+                )
 
                 val responseBody = if (body.contains("filename=\"chunk1.wav\"")) {
                     seenFilenames += "chunk1.wav"
@@ -405,7 +413,12 @@ class TranscriptionClientTest {
 
         assertEquals("zh", extractorLanguage)
         assertTrue(uploadBody.contains("filename=\"audio.m4a\""))
-        assertTrue(uploadBody.contains("name=\"language\"\r\n\r\nzh\r\n"))
+        // The value follows the blank line directly (a per-part Content-Length header
+        // sits between the disposition header and the blank line).
+        assertTrue(
+            "Expected the language hint in the multipart body",
+            uploadBody.contains("name=\"language\"") && uploadBody.contains("\r\n\r\nzh\r\n")
+        )
         assertEquals(listOf(TranscribeItem(0.0, 1.0, "你好", "female")), items)
         assertFalse("Extracted audio should be removed", audioFile.exists())
     }
