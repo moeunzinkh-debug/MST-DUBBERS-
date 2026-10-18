@@ -12,6 +12,10 @@ import com.example.data.db.AppDatabase
 import com.example.data.db.ProjectEntity
 import com.example.data.db.ProjectWithStats
 import com.example.data.db.SegmentEntity
+import com.example.media.AudioClipDecoder
+import com.example.media.DubTimeline
+import com.example.media.SlotFitter
+import com.example.media.WavCodec
 import com.example.util.SubtitleParser
 import com.example.util.WavHelper
 import kotlinx.coroutines.Dispatchers
@@ -420,8 +424,6 @@ class DubberRepository(
         // waveform. When no clear onset is found, keep the subtitle start unchanged — the
         // previous fallback aligned the clip's *end* to the slot end, which guessed that
         // speech fills the whole slot and routinely placed the dub ahead of the actor.
-        // A dub longer than its slot is fine: DubTimeline's Auto-Fit speeds it up and cuts
-        // it when the next line starts.
         val newStart = vadOnset?.coerceIn(seg.start - 0.35, searchEnd) ?: seg.start
         // If speech starts at/after the old slot end, stretch the end too (bounded by the
         // next line): the preview only plays a line while the playhead is inside
@@ -433,11 +435,31 @@ class DubberRepository(
             seg.end
         }
 
+        // Slot-fit: the TTS engine returns whatever length the text produces, so the raw
+        // clip follows the subtitle's words but not its clock. Fit the speech into the
+        // snapped slot [newStart, newEnd] — trim the encoder silence, read faster (or
+        // gently slower) to match, and pad the rest of the slot with silence. The saved
+        // clip then IS the line's timing, so the preview player and the export renderer
+        // hear it at the same place, with silence around it.
+        val slotSec = (newEnd - newStart).coerceAtLeast(0.3)
+        val (finalPath, finalDurationSec) = try {
+            val clipPcm = AudioClipDecoder.decodeToMono(audioFile)
+            val fitted = SlotFitter.fitToSlot(clipPcm, slotSec, fitMaxRate())
+            val wavFile = File(audioDir, "a_${seg.id}_${System.currentTimeMillis()}.wav")
+            WavCodec.writePcm16(wavFile, fitted)
+            audioFile.delete()
+            wavFile.absolutePath to fitted.durationSec
+        } catch (e: Exception) {
+            // Fitting is best-effort: on failure keep the raw TTS clip and let
+            // DubTimeline's Auto-Fit handle it, as before.
+            audioFile.absolutePath to durationSec
+        }
+
         val updated = seg.copy(
             start = newStart,
             end = newEnd,
-            audioPath = audioFile.absolutePath,
-            audioDuration = durationSec
+            audioPath = finalPath,
+            audioDuration = finalDurationSec
         )
         segmentDao.updateSegment(updated)
         GeneratedVoice(segment = updated, speechOnsetSec = vadOnset)
@@ -483,6 +505,11 @@ class DubberRepository(
             segmentDao.updateSegment(seg.copy(start = safeStart, end = safeEnd))
         }
     }
+
+    /** The Auto-Fit cap of the user's current fit mode (see Settings). */
+    private fun fitMaxRate(): Float =
+        SettingsRepository.FIT_MODES.getOrNull(settingsRepository.settings.value.fitIndex)?.rate
+            ?: DubTimeline.DEFAULT_MAX_RATE
 
     private fun getFileExtension(uri: Uri): String? {
         val extension = android.webkit.MimeTypeMap.getFileExtensionFromUrl(uri.toString())

@@ -28,7 +28,7 @@ object DubTrackRenderer {
     const val OUTPUT_SAMPLE_RATE = 44_100
 
     /** Short fade applied where a clip is cut, to avoid an audible click. */
-    private const val CUT_FADE_SEC = 0.012
+    internal const val CUT_FADE_SEC = 0.012
 
     data class Result(
         val file: File,
@@ -166,7 +166,7 @@ object DubTrackRenderer {
     }
 
     /** Fades out the [fadeSamples] samples before [end] (exclusive), in place. */
-    private fun fadeOut(samples: ShortArray, end: Int, fadeSamples: Int) {
+    internal fun fadeOut(samples: ShortArray, end: Int, fadeSamples: Int) {
         val n = min(fadeSamples, end)
         if (n <= 0) return
         for (i in 0 until n) {
