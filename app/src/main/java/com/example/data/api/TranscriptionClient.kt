@@ -286,7 +286,9 @@ class TranscriptionClient(
             .build()
 
     private suspend fun transcribeWithGroq(videoFile: File): List<TranscribeItem> {
-        val groqKey = groqKeyProvider().trim()
+        // Keys copied from settings/apps sometimes contain embedded line breaks. Groq API keys are
+        // printable ASCII tokens; strip whitespace/control characters before putting one in a header.
+        val groqKey = groqKeyProvider().filter { it.code in 0x21..0x7E }
         if (groqKey.isEmpty()) {
             throw IOException("Groq API key is required for Whisper Large v3. Please set it in Settings.")
         }

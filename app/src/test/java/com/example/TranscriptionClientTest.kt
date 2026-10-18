@@ -208,4 +208,38 @@ class TranscriptionClientTest {
         assertEquals(1, requestCount)
         assertFalse("Temporary extracted audio should be removed", audioFile.exists())
     }
+
+    @Test
+    fun `Groq API key line breaks are removed before setting Authorization`() = runBlocking {
+        val videoFile = temporaryFolder.newFile("groq-small.mp4").apply { writeText("video") }
+        var authorizationHeader: String? = null
+
+        val fakeHttpClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                authorizationHeader = request.header("Authorization")
+                val responseBody = """{"segments":[{"start":0,"end":1,"text":"Hello"}]}"""
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(responseBody.toResponseBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val transcriber = TranscriptionClient(
+            geminiKeyProvider = { "test-gemini-key" },
+            groqKeyProvider = { " gsk_test_\nkey\r\n " },
+            client = fakeHttpClient
+        )
+
+        val items = transcriber.transcribe(videoFile, "video/mp4", "groq_whisper")
+
+        assertEquals("Bearer gsk_test_key", authorizationHeader)
+        assertFalse(authorizationHeader.orEmpty().contains('\n'))
+        assertFalse(authorizationHeader.orEmpty().contains('\r'))
+        assertEquals(listOf(TranscribeItem(0.0, 1.0, "Hello", "female")), items)
+    }
 }
