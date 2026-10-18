@@ -37,6 +37,11 @@ object DubTimeline {
      * The speed a segment's voice clip plays at: the manual speed if the user set one, otherwise
      * Auto-Fit, which speeds up a clip that is longer than its line (up to [fitMaxRate]) and never
      * slows clips down.
+     *
+     * Clips written by the current voice generation are already fitted to their slot
+     * ([SlotFitter]), so their [SegmentEntity.audioDuration] equals the slot and Auto-Fit
+     * returns 1.0; this stays the safety net for clips made before slot-fitting, or whenever
+     * fitting failed and the raw TTS clip was kept.
      */
     fun playbackRate(segment: SegmentEntity, fitMaxRate: Float): Float {
         segment.customSpeed?.let { return it.coerceIn(0.25f, 4f) }

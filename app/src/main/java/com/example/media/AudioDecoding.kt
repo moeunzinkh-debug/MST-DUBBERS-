@@ -5,6 +5,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -239,6 +240,17 @@ object WavCodec {
                 raf.seek(bodyStart + size + (size and 1L))
             }
             return null
+        }
+    }
+
+    /** Writes [audio] (mono) as a 16-bit PCM WAV file. */
+    fun writePcm16(file: File, audio: PcmAudio) {
+        val bytes = ByteArray(audio.samples.size * 2)
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        for (sample in audio.samples) buffer.putShort(sample)
+        FileOutputStream(file).use { out ->
+            out.write(header(audio.sampleRate, 1, bytes.size.toLong()))
+            out.write(bytes)
         }
     }
 
