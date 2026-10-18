@@ -174,6 +174,16 @@ fun SettingsSheet(
                     }
                 }
             }
+            Text(
+                text = if (transcriptionEngine == "groq_whisper") {
+                    "Large videos use extracted audio with Groq's 25 MB API limit."
+                } else {
+                    "Gemini transcribes extracted audio for faster results (up to 2 GB)."
+                },
+                color = DarkMuted,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp)
+            )
 
             Spacer(modifier = Modifier.height(14.dp))
 

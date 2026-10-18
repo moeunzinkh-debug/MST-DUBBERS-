@@ -53,10 +53,21 @@ class DubberRepository(
         val projectIdTimestamp = System.currentTimeMillis()
 
         var videoPath = ""
+        var videoMime = "video/mp4"
         var duration = 0.0
 
         if (videoUri != null) {
             val extension = getFileExtension(videoUri) ?: "mp4"
+            val resolverMime = try {
+                context.contentResolver.getType(videoUri)
+            } catch (_: Exception) {
+                null
+            }
+            val extensionMime = android.webkit.MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(extension.lowercase())
+            videoMime = resolverMime?.takeIf { it.startsWith("video/") }
+                ?: extensionMime?.takeIf { it.startsWith("video/") }
+                ?: "video/mp4"
             val destFile = File(projectsDir, "video_${projectIdTimestamp}.$extension")
             context.contentResolver.openInputStream(videoUri)?.use { input ->
                 FileOutputStream(destFile).use { output ->
@@ -81,7 +92,7 @@ class DubberRepository(
         val project = ProjectEntity(
             name = name.ifBlank { "Untitled Project" },
             videoPath = videoPath,
-            videoMime = "video/mp4",
+            videoMime = videoMime,
             duration = duration,
             createdAt = projectIdTimestamp
         )
